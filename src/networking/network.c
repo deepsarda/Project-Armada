@@ -115,22 +115,38 @@ int net_send_event(int sock, const GameEvent *event)
     return 1;
 }
 
-int net_receive_event(int sock, GameEvent *event)
+int net_receive_event_flags(int sock, GameEvent *event, int flags)
 {
     if (sock < 0)
-        return 0;
-    ssize_t valread = read(sock, event, sizeof(GameEvent));
-    if (valread <= 0)
+        return -1;
+
+    ssize_t valread = recv(sock, event, sizeof(GameEvent), flags);
+    if (valread == 0)
     {
-        // 0 means disconnected, -1 means error
-        return 0;
+        return -1; // disconnected
     }
-    if (valread != sizeof(GameEvent))
+
+    if (valread < 0)
     {
-        // NOTE: we assume struct is small enough to arrive in one packet or we fail.
-        // TODO: Implement partial reading.
+        if (errno == EWOULDBLOCK || errno == EAGAIN)
+        {
+            return 0; // no data available for non-blocking polls
+        }
+        perror("recv");
+        return -1;
+    }
+
+    if (valread != (ssize_t)sizeof(GameEvent))
+    {
         fprintf(stderr, "Warning: Partial event read %zd/%lu\n", valread, sizeof(GameEvent));
-        return 0;
+        return -1;
     }
+
     return 1;
+}
+
+int net_receive_event(int sock, GameEvent *event)
+{
+    int result = net_receive_event_flags(sock, event, 0);
+    return result > 0 ? 1 : 0;
 }
