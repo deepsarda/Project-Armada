@@ -1,5 +1,6 @@
 #include "../../include/server/main.h"
 #include <stdio.h>
+#include <string.h>
 
 int server_main_init(ServerContext *ctx)
 {
@@ -71,4 +72,33 @@ void server_main_on_unknown_action(ServerContext *ctx, UserActionType action, in
 {
     (void)ctx;
     printf("[ServerMain] Unknown action %d from player %d.\n", action, player_id);
+}
+
+void server_main_on_turn_action(ServerContext *ctx, const EventPayload_UserAction *action, ServerActionResult *result)
+{
+    (void)ctx;
+    if (!result)
+    {
+        return;
+    }
+
+    if (action)
+    {
+        result->applied_action = *action;
+        printf("[ServerMain] Processing action %d from player %d targeting %d (value=%d meta=%d).\n",
+               action->action_type,
+               action->player_id,
+               action->target_player_id,
+               action->value,
+               action->metadata);
+    }
+    else
+    {
+        memset(&result->applied_action, 0, sizeof(result->applied_action));
+    }
+
+    if (result->winner_id >= 0)
+    {
+        result->game_over = 1;
+    }
 }

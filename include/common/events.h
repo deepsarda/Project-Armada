@@ -13,23 +13,15 @@ typedef enum
     EVENT_PLAYER_JOINED,
     EVENT_PLAYER_LEFT,
     // Match lifecycle
+    EVENT_HOST_UPDATED,
+    EVENT_MATCH_START_REQUEST,
     EVENT_MATCH_START,
-    EVENT_MATCH_STOP,
     // Turn loop notifications
     EVENT_TURN_STARTED,
-    EVENT_TURN_COMPLETED,
-    EVENT_TURN_TIMEOUT,
     // Client issued commands routed via server
     EVENT_USER_ACTION,
     // Gameplay feedback hooks
-    EVENT_PLANET_UPGRADED,
-    EVENT_SHIP_UPGRADED,
-    EVENT_PLANET_ATTACKED,
-    EVENT_PLANET_REPAIRED,
-    EVENT_STARS_CHANGED,
-    EVENT_DEFENSE_FULL,
     EVENT_STAR_THRESHOLD_REACHED,
-    EVENT_STATE_UPDATE,
     EVENT_GAME_OVER,
     EVENT_ERROR
 } EventType;
@@ -46,6 +38,8 @@ typedef struct
     int player_id;
     int success;
     char message[64];
+    int host_player_id;
+    int is_host;
 } EventPayload_JoinAck;
 
 typedef struct
@@ -59,11 +53,6 @@ typedef struct
 
 typedef struct
 {
-    PlayerGameState game;
-} EventPayload_StateUpdate;
-
-typedef struct
-{
     int player_id;
     char player_name[MAX_NAME_LEN];
     int reason_code;
@@ -74,53 +63,26 @@ typedef struct
     int current_player_id;
     int next_player_id;
     int turn_number;
-    int ms_remaining;
+    int is_match_start;
+    EventPayload_UserAction last_action;
+    PlayerGameState game;
 } EventPayload_TurnInfo;
 
 typedef struct
 {
-    int player_id;
-    int from_level;
-    int new_level;
-    int resource_delta;
-} EventPayload_Upgrade;
+    GameState state;
+} EventPayload_MatchStart;
 
 typedef struct
 {
-    int attacker_id;
-    int defender_id;
-    int planet_damage;
-    int star_delta;
-    int was_planet_destroyed;
-} EventPayload_Attack;
-
-typedef struct
-{
-    int player_id;
-    int repaired_amount;
-    int resulting_health;
-} EventPayload_Repair;
-
-typedef struct
-{
-    int player_id;
-    int delta;
-    int new_total;
-    int reason_code;
-} EventPayload_StarsChange;
-
-typedef struct
-{
-    int defender_id;
-    int was_full_defense;
-    int stars_reset;
-} EventPayload_Defense;
+    int host_player_id;
+    char host_player_name[MAX_NAME_LEN];
+} EventPayload_HostUpdate;
 
 typedef struct
 {
     int player_id;
     int threshold;
-    int current_total;
 } EventPayload_Threshold;
 
 typedef struct
@@ -149,13 +111,9 @@ typedef struct
         EventPayload_PlayerLifecycle player_event;
         EventPayload_TurnInfo turn;
         EventPayload_UserAction action;
-        EventPayload_Upgrade upgrade;
-        EventPayload_Attack attack;
-        EventPayload_Repair repair;
-        EventPayload_StarsChange stars_change;
-        EventPayload_Defense defense;
+        EventPayload_MatchStart match_start;
+        EventPayload_HostUpdate host_update;
         EventPayload_Threshold threshold;
-        EventPayload_StateUpdate state_update;
         EventPayload_GameOver game_over;
         EventPayload_Error error;
     } data;

@@ -16,4 +16,14 @@ void server_main_on_client_disconnected(ServerContext *ctx, int socket_fd);
 void server_main_on_unhandled_event(ServerContext *ctx, EventType type);
 void server_main_on_unknown_action(ServerContext *ctx, UserActionType action, int player_id);
 
+typedef struct
+{
+    EventPayload_UserAction applied_action;
+    int game_over;
+    int winner_id;
+    char reason[64];
+} ServerActionResult;
+
+void server_main_on_turn_action(ServerContext *ctx, const EventPayload_UserAction *action, ServerActionResult *result);
+
 #endif // SERVER_MAIN_H

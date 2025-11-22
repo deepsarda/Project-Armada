@@ -42,6 +42,16 @@ void client_main_on_join_ack(ClientContext *ctx, const EventPayload_JoinAck *pay
     if (payload->success)
     {
         printf("[Client %s] Joined successfully. Assigned ID %d.\n", ctx->player_name, payload->player_id);
+        if (payload->is_host)
+        {
+            printf("[Client %s] You are the lobby host. Use 'start' to begin once ready.\n", ctx->player_name);
+        }
+        else if (payload->host_player_id >= 0)
+        {
+            printf("[Client %s] Waiting for host player %d to begin the match.\n",
+                   ctx->player_name,
+                   payload->host_player_id);
+        }
     }
     else
     {
@@ -59,6 +69,28 @@ void client_main_on_player_joined(ClientContext *ctx, const EventPayload_PlayerL
            payload->player_name);
 }
 
+void client_main_on_host_update(ClientContext *ctx, const EventPayload_HostUpdate *payload)
+{
+    if (!payload)
+        return;
+
+    if (payload->host_player_id >= 0)
+    {
+        printf("[Client %s] Player %d (%s) is now the lobby host.\n",
+               ctx->player_name,
+               payload->host_player_id,
+               payload->host_player_name);
+        if (ctx && ctx->player_id == payload->host_player_id)
+        {
+            printf("[Client %s] You are now the host. Type 'start' when ready.\n", ctx->player_name);
+        }
+    }
+    else
+    {
+        printf("[Client %s] Lobby host cleared. Waiting for a new host.\n", ctx->player_name);
+    }
+}
+
 void client_main_on_player_left(ClientContext *ctx, const EventPayload_PlayerLifecycle *payload)
 {
     if (!payload)
@@ -69,15 +101,26 @@ void client_main_on_player_left(ClientContext *ctx, const EventPayload_PlayerLif
            payload->player_name);
 }
 
-void client_main_on_match_start(ClientContext *ctx)
+void client_main_on_match_start(ClientContext *ctx, const EventPayload_MatchStart *payload)
 {
-    printf("[Client %s] Match countdown complete.\n", ctx->player_name);
+    if (!payload || !ctx)
+        return;
+
+    ctx->host_player_id = payload->state.host_player_id;
+    ctx->is_host = (ctx->player_id >= 0 && ctx->player_id == ctx->host_player_id);
+    ctx->has_state_snapshot = 0;
+    memset(&ctx->player_game_state, 0, sizeof(PlayerGameState));
+
+    printf("[Client %s] Match started with %d players. First turn belongs to player %d.\n",
+           ctx->player_name,
+           payload->state.player_count,
+           payload->state.turn.current_player_id);
 }
 
 void client_main_on_match_stop(ClientContext *ctx, const EventPayload_Error *payload)
 {
     const char *reason = (payload) ? payload->message : "Unknown";
-    printf("[Client %s] Match stopped: %s\n", ctx->player_name, reason);
+    printf("[Client %s] Server message: %s\n", ctx->player_name, reason);
 }
 
 void client_main_on_turn_event(ClientContext *ctx, EventType type, const EventPayload_TurnInfo *payload)
@@ -90,25 +133,32 @@ void client_main_on_turn_event(ClientContext *ctx, EventType type, const EventPa
            payload->current_player_id,
            payload->next_player_id,
            payload->turn_number);
-}
 
-void client_main_on_state_update(ClientContext *ctx, const PlayerGameState *player_game_state)
-{
-    if (!player_game_state)
-        return;
-    ctx->player_game_state = *player_game_state;
-    ctx->has_state_snapshot = 1;
+    if (payload->is_match_start)
+    {
+        printf("[Client %s] Match phase starting with this turn.\n", ctx->player_name);
+    }
+
+    if (payload->last_action.action_type != USER_ACTION_NONE)
+    {
+        printf("[Client %s] Last action: player %d type %d target %d value %d meta %d.\n",
+               ctx->player_name,
+               payload->last_action.player_id,
+               payload->last_action.action_type,
+               payload->last_action.target_player_id,
+               payload->last_action.value,
+               payload->last_action.metadata);
+    }
 }
 
 void client_main_on_threshold(ClientContext *ctx, const EventPayload_Threshold *payload)
 {
     if (!payload)
         return;
-    printf("[Client %s] Player %d crossed %d stars (now %d).\n",
+    printf("[Client %s] Player %d crossed %d stars.\n",
            ctx->player_name,
            payload->player_id,
-           payload->threshold,
-           payload->current_total);
+           payload->threshold);
 }
 
 void client_main_on_action_sent(ClientContext *ctx, UserActionType type, int target_player_id, int value, int metadata)

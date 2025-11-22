@@ -1,3 +1,5 @@
+// server.c - Networking server implementation for multiplayer game
+
 #include "../../include/server/server_api.h"
 #include "../../include/server/main.h"
 #include "../../include/networking/network.h"
@@ -11,42 +13,53 @@
 #include <time.h>
 #include <unistd.h>
 
+// Arguments passed to each client thread
 typedef struct
 {
     ServerContext *ctx;
     int socket_fd;
 } ClientThreadArgs;
 
+// Thread entry points
 static void *server_accept_thread(void *arg);
 static void *server_client_thread(void *arg);
 
+// Event handlers
 static void server_handle_event(ServerContext *ctx, const GameEvent *event);
 static void server_handle_player_join(ServerContext *ctx, int sender_socket, const EventPayload_PlayerJoin *payload);
 static void server_handle_user_action(ServerContext *ctx, const EventPayload_UserAction *payload);
+static void server_handle_match_start_request(ServerContext *ctx, int requester_id);
 static void server_handle_disconnect(ServerContext *ctx, int socket_fd);
 
+// Event sending helpers
 static void server_broadcast_event(ServerContext *ctx, const GameEvent *event);
 static void server_send_event_to(ServerContext *ctx, int player_id, const GameEvent *event);
-static void server_broadcast_state(ServerContext *ctx);
-static void server_send_state_to(ServerContext *ctx, int viewer_id);
+static void server_broadcast_current_turn(ServerContext *ctx, int is_match_start, const EventPayload_UserAction *last_action);
 
+// Player management helpers
 static PlayerState *server_get_player(ServerContext *ctx, int player_id);
 static int server_find_open_slot(ServerContext *ctx);
 static int server_find_player_by_socket(ServerContext *ctx, int socket_fd);
 static void server_reset_player(PlayerState *player, int player_id, const char *name);
 static void server_refresh_player_count(ServerContext *ctx);
 
+// Game state helpers
 static void server_start_match(ServerContext *ctx);
-static void server_stop_match(ServerContext *ctx, const char *reason);
-static void server_emit_turn_event(ServerContext *ctx, EventType type, int turn_number, int current_id, int next_id, int ms_remaining);
-static void server_advance_turn(ServerContext *ctx);
+static void server_emit_turn_event(ServerContext *ctx, EventType type, int turn_number, int current_id, int next_id, int is_match_start, const EventPayload_UserAction *last_action);
+static void server_advance_turn(ServerContext *ctx, const EventPayload_UserAction *last_action);
 static int server_next_active_player(ServerContext *ctx, int start_after);
 
-static void server_emit_full_defense_event(ServerContext *ctx, int player_id);
-static void server_emit_threshold_event(ServerContext *ctx, int player_id, int current_total);
+// Misc helpers
+static void server_emit_threshold_event(ServerContext *ctx, int player_id);
+static void server_emit_host_update(ServerContext *ctx, int host_id, const char *host_name);
+static int server_collect_active_players(ServerContext *ctx, int *out_ids, int max_ids);
+static int server_build_player_snapshot(ServerContext *ctx, int viewer_id, PlayerGameState *out_state);
 static int to_coarse_percent(int current, int max);
 static int clamp_int(int value, int min, int max);
+static int server_select_host_locked(ServerContext *ctx);
+static void server_send_error_event(ServerContext *ctx, int player_id, int error_code, const char *message);
 
+// Create a new server context
 ServerContext *server_create()
 {
     ServerContext *ctx = (ServerContext *)malloc(sizeof(ServerContext));
@@ -58,6 +71,9 @@ ServerContext *server_create()
     ctx->server_socket = -1;
     ctx->running = 0;
     ctx->accept_thread = 0;
+    ctx->game_state.host_player_id = -1;
+    ctx->game_state.turn.current_player_id = -1;
+    ctx->game_state.winner_id = -1;
     for (int i = 0; i < MAX_PLAYERS; ++i)
     {
         ctx->player_sockets[i] = -1;
@@ -66,6 +82,7 @@ ServerContext *server_create()
     return ctx;
 }
 
+// Destroy server context and free resources
 void server_destroy(ServerContext *ctx)
 {
     if (!ctx)
@@ -80,6 +97,7 @@ void server_destroy(ServerContext *ctx)
     free(ctx);
 }
 
+// Initialize server context for a new game
 int server_init(ServerContext *ctx, int max_players)
 {
     if (!ctx)
@@ -90,10 +108,10 @@ int server_init(ServerContext *ctx, int max_players)
 
     pthread_mutex_lock(&ctx->state_mutex);
     memset(&ctx->game_state, 0, sizeof(GameState));
-    ctx->game_state.turn.ms_per_turn = TURN_DURATION_SECONDS * 1000;
     ctx->game_state.turn.current_player_id = -1;
-    ctx->game_state.turn.turn_started_at = 0;
     ctx->game_state.turn.turn_number = 0;
+    ctx->game_state.host_player_id = -1;
+    ctx->game_state.winner_id = -1;
     pthread_mutex_unlock(&ctx->state_mutex);
 
     server_main_init(ctx);
@@ -101,6 +119,7 @@ int server_init(ServerContext *ctx, int max_players)
     return 0;
 }
 
+// Start the server and begin accepting clients
 void server_start(ServerContext *ctx)
 {
     if (!ctx)
@@ -128,6 +147,7 @@ void server_start(ServerContext *ctx)
     }
 }
 
+// Stop the server and disconnect all clients
 void server_stop(ServerContext *ctx)
 {
     if (!ctx)
@@ -161,10 +181,15 @@ void server_stop(ServerContext *ctx)
     }
     ctx->game_state.player_count = 0;
     ctx->game_state.match_started = 0;
+    ctx->game_state.host_player_id = -1;
+    ctx->game_state.is_game_over = 0;
+    ctx->game_state.winner_id = -1;
     ctx->game_state.turn.current_player_id = -1;
+    ctx->game_state.turn.turn_number = 0;
     pthread_mutex_unlock(&ctx->state_mutex);
 }
 
+// Accept thread: listens for new client connections
 static void *server_accept_thread(void *arg)
 {
     ServerContext *ctx = (ServerContext *)arg;
@@ -186,11 +211,6 @@ static void *server_accept_thread(void *arg)
         server_main_on_client_connected(ctx, new_socket);
 
         // Create a thread for this client
-        // TODO: might want to manage these threads better (e.g. pool)
-        // For now, just detach or keep track?
-        // don't have a slot for the thread handle until they join.
-        // So we just malloc the args and let it run.
-
         ClientThreadArgs *args = malloc(sizeof(ClientThreadArgs));
         args->ctx = ctx;
         args->socket_fd = new_socket;
@@ -210,6 +230,7 @@ static void *server_accept_thread(void *arg)
     return NULL;
 }
 
+// Client thread: handles communication with a single client
 static void *server_client_thread(void *arg)
 {
     ClientThreadArgs *args = (ClientThreadArgs *)arg;
@@ -245,6 +266,7 @@ static void *server_client_thread(void *arg)
     return NULL;
 }
 
+// Dispatch incoming events to appropriate handlers
 static void server_handle_event(ServerContext *ctx, const GameEvent *event)
 {
     if (!event)
@@ -258,12 +280,16 @@ static void server_handle_event(ServerContext *ctx, const GameEvent *event)
     case EVENT_USER_ACTION:
         server_handle_user_action(ctx, &event->data.action);
         break;
+    case EVENT_MATCH_START_REQUEST:
+        server_handle_match_start_request(ctx, event->sender_id);
+        break;
     default:
         server_main_on_unhandled_event(ctx, event->type);
         break;
     }
 }
 
+// Handle player join requests
 static void server_handle_player_join(ServerContext *ctx, int sender_socket, const EventPayload_PlayerJoin *payload)
 {
     if (!payload)
@@ -275,12 +301,19 @@ static void server_handle_player_join(ServerContext *ctx, int sender_socket, con
     ack_event.timestamp = time(NULL);
     ack_event.data.join_ack.success = 0;
     ack_event.data.join_ack.player_id = -1;
+    ack_event.data.join_ack.host_player_id = -1;
+    ack_event.data.join_ack.is_host = 0;
+
+    int host_changed = 0;
+    int new_host_id = -1;
+    char new_host_name[MAX_NAME_LEN] = {0};
 
     pthread_mutex_lock(&ctx->state_mutex);
     int slot = server_find_open_slot(ctx);
     if (slot == -1)
     {
         snprintf(ack_event.data.join_ack.message, sizeof(ack_event.data.join_ack.message), "Server full");
+        ack_event.data.join_ack.host_player_id = ctx->game_state.host_player_id;
     }
     else
     {
@@ -290,6 +323,20 @@ static void server_handle_player_join(ServerContext *ctx, int sender_socket, con
         ack_event.data.join_ack.success = 1;
         ack_event.data.join_ack.player_id = slot;
         snprintf(ack_event.data.join_ack.message, sizeof(ack_event.data.join_ack.message), "Welcome!");
+
+        int previous_host = ctx->game_state.host_player_id;
+        new_host_id = server_select_host_locked(ctx);
+        ack_event.data.join_ack.host_player_id = ctx->game_state.host_player_id;
+        ack_event.data.join_ack.is_host = (ctx->game_state.host_player_id == slot);
+        if (new_host_id != previous_host)
+        {
+            host_changed = 1;
+            if (new_host_id >= 0)
+            {
+                strncpy(new_host_name, ctx->game_state.players[new_host_id].name, MAX_NAME_LEN - 1);
+                new_host_name[MAX_NAME_LEN - 1] = '\0';
+            }
+        }
     }
     pthread_mutex_unlock(&ctx->state_mutex);
 
@@ -301,6 +348,7 @@ static void server_handle_player_join(ServerContext *ctx, int sender_socket, con
 
     server_send_event_to(ctx, ack_event.data.join_ack.player_id, &ack_event);
 
+    // Notify all players of new join
     GameEvent lifecycle;
     memset(&lifecycle, 0, sizeof(GameEvent));
     lifecycle.type = EVENT_PLAYER_JOINED;
@@ -309,32 +357,40 @@ static void server_handle_player_join(ServerContext *ctx, int sender_socket, con
     strncpy(lifecycle.data.player_event.player_name, payload->player_name, MAX_NAME_LEN - 1);
     server_broadcast_event(ctx, &lifecycle);
 
-    pthread_mutex_lock(&ctx->state_mutex);
-    int should_start = (!ctx->game_state.match_started && ctx->game_state.player_count >= MIN_PLAYERS);
-    pthread_mutex_unlock(&ctx->state_mutex);
+    server_broadcast_current_turn(ctx, 0, NULL);
 
-    server_broadcast_state(ctx);
-
-    if (should_start)
+    if (host_changed)
     {
-        server_start_match(ctx);
+        server_emit_host_update(ctx, new_host_id, new_host_name);
     }
 }
 
+// Handle user actions (gameplay)
 static void server_handle_user_action(ServerContext *ctx, const EventPayload_UserAction *payload)
 {
     if (!payload)
         return;
 
-    int emit_turn_completed = 0;
-    EventPayload_TurnInfo turn_info = {0};
-    int emit_full_defense = 0;
-    int defense_player_id = -1;
+    ServerActionResult action_result;
+    memset(&action_result, 0, sizeof(ServerActionResult));
+    action_result.applied_action = *payload;
+    action_result.winner_id = -1;
+
     int emit_threshold = 0;
     int threshold_player_id = -1;
-    int threshold_total = 0;
+    int conclude_game = 0;
+    int winner_id = -1;
+    char game_over_reason[64] = {0};
 
     pthread_mutex_lock(&ctx->state_mutex);
+
+    // Validate turn and player
+    if (!ctx->game_state.match_started || ctx->game_state.turn.current_player_id != payload->player_id)
+    {
+        pthread_mutex_unlock(&ctx->state_mutex);
+        return;
+    }
+
     PlayerState *player = server_get_player(ctx, payload->player_id);
     if (!player || !player->is_active)
     {
@@ -342,17 +398,12 @@ static void server_handle_user_action(ServerContext *ctx, const EventPayload_Use
         return;
     }
 
+    // Apply action
     switch (payload->action_type)
     {
+    case USER_ACTION_NONE:
+        break;
     case USER_ACTION_END_TURN:
-        if (ctx->game_state.turn.current_player_id == player->player_id)
-        {
-            emit_turn_completed = 1;
-            turn_info.current_player_id = player->player_id;
-            turn_info.next_player_id = server_next_active_player(ctx, player->player_id);
-            turn_info.turn_number = ctx->game_state.turn.turn_number;
-            turn_info.ms_remaining = 0;
-        }
         break;
     case USER_ACTION_SET_DEFENSE:
         player->is_defending = payload->value;
@@ -360,8 +411,6 @@ static void server_handle_user_action(ServerContext *ctx, const EventPayload_Use
         {
             player->stars = 0;
             player->has_crossed_threshold = 0;
-            emit_full_defense = 1;
-            defense_player_id = player->player_id;
         }
         break;
     case USER_ACTION_UPGRADE_PLANET:
@@ -388,37 +437,122 @@ static void server_handle_user_action(ServerContext *ctx, const EventPayload_Use
         break;
     }
 
+    server_main_on_turn_action(ctx, payload, &action_result);
+
+    // Check for game over
+    if (action_result.game_over)
+    {
+        conclude_game = 1;
+        winner_id = action_result.winner_id;
+        if (action_result.reason[0])
+        {
+            strncpy(game_over_reason, action_result.reason, sizeof(game_over_reason) - 1);
+        }
+    }
+
+    // Check for star goal
+    if (!conclude_game && player->stars >= STAR_GOAL)
+    {
+        conclude_game = 1;
+        winner_id = player->player_id;
+        strncpy(game_over_reason, "Star goal reached", sizeof(game_over_reason) - 1);
+    }
+
+    // Check for star threshold warning
     if (player->stars >= STAR_WARNING_THRESHOLD && !player->has_crossed_threshold)
     {
         player->has_crossed_threshold = 1;
         emit_threshold = 1;
         threshold_player_id = player->player_id;
-        threshold_total = player->stars;
     }
 
     pthread_mutex_unlock(&ctx->state_mutex);
 
-    if (emit_turn_completed)
-    {
-        server_emit_turn_event(ctx, EVENT_TURN_COMPLETED, turn_info.turn_number, turn_info.current_player_id, turn_info.next_player_id, turn_info.ms_remaining);
-        server_advance_turn(ctx);
-    }
-
-    if (emit_full_defense)
-    {
-        server_emit_full_defense_event(ctx, defense_player_id);
-    }
-
     if (emit_threshold)
     {
-        server_emit_threshold_event(ctx, threshold_player_id, threshold_total);
+        server_emit_threshold_event(ctx, threshold_player_id);
     }
 
-    server_broadcast_state(ctx);
+    if (conclude_game)
+    {
+        GameEvent over_event;
+        memset(&over_event, 0, sizeof(GameEvent));
+        over_event.type = EVENT_GAME_OVER;
+        over_event.timestamp = time(NULL);
+        over_event.data.game_over.winner_id = winner_id;
+        if (!game_over_reason[0])
+        {
+            strncpy(game_over_reason, "Victory", sizeof(game_over_reason) - 1);
+        }
+        strncpy(over_event.data.game_over.reason, game_over_reason, sizeof(over_event.data.game_over.reason) - 1);
+
+        pthread_mutex_lock(&ctx->state_mutex);
+        ctx->game_state.match_started = 0;
+        ctx->game_state.is_game_over = 1;
+        ctx->game_state.winner_id = winner_id;
+        pthread_mutex_unlock(&ctx->state_mutex);
+
+        server_broadcast_event(ctx, &over_event);
+        return;
+    }
+
+    // Advance to next turn
+    server_advance_turn(ctx, &action_result.applied_action);
 }
 
+// Handle match start requests
+static void server_handle_match_start_request(ServerContext *ctx, int requester_id)
+{
+    if (!ctx)
+        return;
+
+    pthread_mutex_lock(&ctx->state_mutex);
+    if (requester_id < 0 || requester_id >= MAX_PLAYERS)
+    {
+        pthread_mutex_unlock(&ctx->state_mutex);
+        return;
+    }
+
+    PlayerState *requester = server_get_player(ctx, requester_id);
+    if (!requester || !requester->is_active)
+    {
+        pthread_mutex_unlock(&ctx->state_mutex);
+        return;
+    }
+
+    int host_id = ctx->game_state.host_player_id;
+    int match_started = ctx->game_state.match_started;
+    int player_count = ctx->game_state.player_count;
+    pthread_mutex_unlock(&ctx->state_mutex);
+
+    if (match_started)
+    {
+        server_send_error_event(ctx, requester_id, 2001, "Match already started");
+        return;
+    }
+
+    if (host_id != requester_id)
+    {
+        server_send_error_event(ctx, requester_id, 2002, "Only the lobby host can start the match");
+        return;
+    }
+
+    if (player_count < MIN_PLAYERS)
+    {
+        server_send_error_event(ctx, requester_id, 2003, "Need at least 2 players to start");
+        return;
+    }
+
+    server_start_match(ctx);
+}
+
+// Handle player disconnects
 static void server_handle_disconnect(ServerContext *ctx, int socket_fd)
 {
+    int host_changed = 0;
+    int new_host_id = -1;
+    char new_host_name[MAX_NAME_LEN] = {0};
+
     pthread_mutex_lock(&ctx->state_mutex);
     int player_id = server_find_player_by_socket(ctx, socket_fd);
     if (player_id == -1)
@@ -437,8 +571,20 @@ static void server_handle_disconnect(ServerContext *ctx, int socket_fd)
     server_refresh_player_count(ctx);
 
     int was_current = (ctx->game_state.turn.current_player_id == player_id);
+    int previous_host = ctx->game_state.host_player_id;
+    new_host_id = server_select_host_locked(ctx);
+    if (new_host_id != previous_host)
+    {
+        host_changed = 1;
+        if (new_host_id >= 0)
+        {
+            strncpy(new_host_name, ctx->game_state.players[new_host_id].name, MAX_NAME_LEN - 1);
+            new_host_name[MAX_NAME_LEN - 1] = '\0';
+        }
+    }
     pthread_mutex_unlock(&ctx->state_mutex);
 
+    // Notify all players of player leaving
     GameEvent lifecycle;
     memset(&lifecycle, 0, sizeof(GameEvent));
     lifecycle.type = EVENT_PLAYER_LEFT;
@@ -447,24 +593,21 @@ static void server_handle_disconnect(ServerContext *ctx, int socket_fd)
     strncpy(lifecycle.data.player_event.player_name, name_copy, MAX_NAME_LEN - 1);
     server_broadcast_event(ctx, &lifecycle);
 
+    // Advance turn if needed
     if (was_current)
     {
-        server_advance_turn(ctx);
+        server_advance_turn(ctx, NULL);
     }
 
-    pthread_mutex_lock(&ctx->state_mutex);
-    int player_count = ctx->game_state.player_count;
-    int match_running = ctx->game_state.match_started;
-    pthread_mutex_unlock(&ctx->state_mutex);
+    server_broadcast_current_turn(ctx, 0, NULL);
 
-    if (match_running && player_count < MIN_PLAYERS)
+    if (host_changed)
     {
-        server_stop_match(ctx, "Not enough players");
+        server_emit_host_update(ctx, new_host_id, new_host_name);
     }
-
-    server_broadcast_state(ctx);
 }
 
+// Broadcast an event to all active players
 static void server_broadcast_event(ServerContext *ctx, const GameEvent *event)
 {
     pthread_mutex_lock(&ctx->state_mutex);
@@ -479,6 +622,7 @@ static void server_broadcast_event(ServerContext *ctx, const GameEvent *event)
     pthread_mutex_unlock(&ctx->state_mutex);
 }
 
+// Send an event to a specific player
 static void server_send_event_to(ServerContext *ctx, int player_id, const GameEvent *event)
 {
     pthread_mutex_lock(&ctx->state_mutex);
@@ -493,86 +637,100 @@ static void server_send_event_to(ServerContext *ctx, int player_id, const GameEv
     pthread_mutex_unlock(&ctx->state_mutex);
 }
 
-static void server_send_state_to(ServerContext *ctx, int viewer_id)
+// Collect IDs of all active players
+static int server_collect_active_players(ServerContext *ctx, int *out_ids, int max_ids)
 {
-    PlayerGameState player_state;
-    memset(&player_state, 0, sizeof(PlayerGameState));
+    if (!out_ids || max_ids <= 0)
+    {
+        return 0;
+    }
+
+    int count = 0;
+    pthread_mutex_lock(&ctx->state_mutex);
+    for (int i = 0; i < MAX_PLAYERS && count < max_ids; ++i)
+    {
+        if (ctx->game_state.players[i].is_active)
+        {
+            out_ids[count++] = i;
+        }
+    }
+    pthread_mutex_unlock(&ctx->state_mutex);
+    return count;
+}
+
+// Build a snapshot of game state for a specific viewer
+static int server_build_player_snapshot(ServerContext *ctx, int viewer_id, PlayerGameState *out_state)
+{
+    if (!out_state)
+    {
+        return 0;
+    }
+    int previous_host = ctx->game_state.host_player_id;
+    int host_changed = 0;
+    int new_host_id = -1;
+    char new_host_name[MAX_NAME_LEN] = {0};
+
+    new_host_id = server_select_host_locked(ctx);
+    if (new_host_id != previous_host)
+    {
+        host_changed = 1;
+        if (new_host_id >= 0)
+        {
+            strncpy(new_host_name, ctx->game_state.players[new_host_id].name, MAX_NAME_LEN - 1);
+            new_host_name[MAX_NAME_LEN - 1] = '\0';
+        }
+    }
+
+    PlayerGameState snapshot;
+    memset(&snapshot, 0, sizeof(PlayerGameState));
 
     pthread_mutex_lock(&ctx->state_mutex);
     PlayerState *viewer = server_get_player(ctx, viewer_id);
     if (!viewer || !viewer->is_active)
     {
         pthread_mutex_unlock(&ctx->state_mutex);
-        return;
+        return 0;
     }
 
-    player_state.viewer_id = viewer_id;
-    player_state.self = *viewer;
+    snapshot.viewer_id = viewer_id;
+    snapshot.self = *viewer;
 
     for (int i = 0; i < MAX_PLAYERS; ++i)
     {
-        PlayerPublicInfo *info = &player_state.entries[i];
+        PlayerPublicInfo info;
+        memset(&info, 0, sizeof(info));
         PlayerState *candidate = &ctx->game_state.players[i];
-        info->player_id = i;
-        info->planet_level = candidate->planet.level;
-        info->ship_level = candidate->ship.level;
-        info->ship_base_damage = candidate->ship.base_damage;
+        info.player_id = i;
+        info.planet_level = candidate->planet.level;
+
+        if (host_changed)
+        {
+            server_emit_host_update(ctx, new_host_id, new_host_name);
+        }
+        info.ship_level = candidate->ship.level;
+        info.ship_base_damage = candidate->ship.base_damage;
         if (candidate->is_active)
         {
             if (viewer_id == i)
             {
-                info->show_stars = 1;
-                info->stars = candidate->stars;
-                info->coarse_planet_health = (candidate->planet.max_health == 0) ? 0 : (candidate->planet.current_health * 100) / candidate->planet.max_health;
-                info->coarse_ship_health = (candidate->ship.max_health == 0) ? 0 : (candidate->ship.current_health * 100) / candidate->ship.max_health;
+                info.show_stars = 1;
+                info.coarse_planet_health = (candidate->planet.max_health == 0) ? 0 : (candidate->planet.current_health * 100) / candidate->planet.max_health;
             }
             else
             {
-                info->show_stars = candidate->stars >= STAR_WARNING_THRESHOLD;
-                info->stars = info->show_stars ? candidate->stars : -1;
-                info->coarse_planet_health = to_coarse_percent(candidate->planet.current_health, candidate->planet.max_health);
-                info->coarse_ship_health = to_coarse_percent(candidate->ship.current_health, candidate->ship.max_health);
+                info.show_stars = candidate->stars >= STAR_WARNING_THRESHOLD;
+                info.coarse_planet_health = to_coarse_percent(candidate->planet.current_health, candidate->planet.max_health);
             }
         }
-        else
-        {
-            info->show_stars = 0;
-            info->stars = -1;
-            info->coarse_planet_health = 0;
-            info->coarse_ship_health = 0;
-        }
+        snapshot.entries[i] = info;
     }
     pthread_mutex_unlock(&ctx->state_mutex);
 
-    GameEvent state_event;
-    memset(&state_event, 0, sizeof(GameEvent));
-    state_event.type = EVENT_STATE_UPDATE;
-    state_event.timestamp = time(NULL);
-    state_event.data.state_update.game = player_state;
-
-    server_send_event_to(ctx, viewer_id, &state_event);
+    *out_state = snapshot;
+    return 1;
 }
 
-static void server_broadcast_state(ServerContext *ctx)
-{
-    pthread_mutex_lock(&ctx->state_mutex);
-    int active_ids[MAX_PLAYERS];
-    int count = 0;
-    for (int i = 0; i < MAX_PLAYERS; ++i)
-    {
-        if (ctx->game_state.players[i].is_active)
-        {
-            active_ids[count++] = i;
-        }
-    }
-    pthread_mutex_unlock(&ctx->state_mutex);
-
-    for (int i = 0; i < count; ++i)
-    {
-        server_send_state_to(ctx, active_ids[i]);
-    }
-}
-
+// Get pointer to player state by ID
 static PlayerState *server_get_player(ServerContext *ctx, int player_id)
 {
     if (player_id < 0 || player_id >= MAX_PLAYERS)
@@ -580,6 +738,7 @@ static PlayerState *server_get_player(ServerContext *ctx, int player_id)
     return &ctx->game_state.players[player_id];
 }
 
+// Find an open slot for a new player
 static int server_find_open_slot(ServerContext *ctx)
 {
     for (int i = 0; i < ctx->max_players && i < MAX_PLAYERS; ++i)
@@ -592,6 +751,7 @@ static int server_find_open_slot(ServerContext *ctx)
     return -1;
 }
 
+// Find player ID by socket FD
 static int server_find_player_by_socket(ServerContext *ctx, int socket_fd)
 {
     for (int i = 0; i < MAX_PLAYERS; ++i)
@@ -604,6 +764,7 @@ static int server_find_player_by_socket(ServerContext *ctx, int socket_fd)
     return -1;
 }
 
+// Reset player state for a new player
 static void server_reset_player(PlayerState *player, int player_id, const char *name)
 {
     memset(player, 0, sizeof(PlayerState));
@@ -621,13 +782,13 @@ static void server_reset_player(PlayerState *player, int player_id, const char *
     player->planet.current_health = STARTING_PLANET_MAX_HEALTH;
     player->planet.base_income = STARTING_PLANET_INCOME;
     player->ship.level = STARTING_SHIP_LEVEL;
-    player->ship.max_health = STARTING_SHIP_MAX_HEALTH;
-    player->ship.current_health = STARTING_SHIP_MAX_HEALTH;
     player->ship.base_damage = STARTING_SHIP_BASE_DAMAGE;
+    player->ship.upgrade_cost = 0;
     player->is_defending = 0;
     player->has_crossed_threshold = 0;
 }
 
+// Refresh player count in game state
 static void server_refresh_player_count(ServerContext *ctx)
 {
     int count = 0;
@@ -641,76 +802,108 @@ static void server_refresh_player_count(ServerContext *ctx)
     ctx->game_state.player_count = count;
 }
 
+// Start a new match
 static void server_start_match(ServerContext *ctx)
 {
-    int current_player;
-    int next_player;
-    int turn_number;
-    int ms_per_turn;
+    GameState snapshot;
+    memset(&snapshot, 0, sizeof(GameState));
 
     pthread_mutex_lock(&ctx->state_mutex);
-    if (ctx->game_state.player_count < MIN_PLAYERS)
+    if (ctx->game_state.match_started || ctx->game_state.player_count < MIN_PLAYERS)
     {
         pthread_mutex_unlock(&ctx->state_mutex);
         return;
     }
-    ctx->game_state.match_started = 1;
-    ctx->game_state.turn.turn_number = 1;
-    ctx->game_state.turn.current_player_id = server_next_active_player(ctx, -1);
-    ctx->game_state.turn.turn_started_at = time(NULL);
-    current_player = ctx->game_state.turn.current_player_id;
-    turn_number = ctx->game_state.turn.turn_number;
-    ms_per_turn = ctx->game_state.turn.ms_per_turn;
-    next_player = server_next_active_player(ctx, current_player);
-    pthread_mutex_unlock(&ctx->state_mutex);
 
-    if (current_player == -1)
+    int start_player = ctx->game_state.host_player_id;
+    if (start_player < 0 || start_player >= MAX_PLAYERS || !ctx->game_state.players[start_player].is_active)
     {
+        start_player = server_next_active_player(ctx, -1);
+    }
+
+    if (start_player == -1)
+    {
+        pthread_mutex_unlock(&ctx->state_mutex);
         return;
     }
+
+    ctx->game_state.match_started = 1;
+    ctx->game_state.is_game_over = 0;
+    ctx->game_state.winner_id = -1;
+    ctx->game_state.turn.turn_number = 1;
+    ctx->game_state.turn.current_player_id = start_player;
+    snapshot = ctx->game_state;
+    pthread_mutex_unlock(&ctx->state_mutex);
 
     GameEvent start_event;
     memset(&start_event, 0, sizeof(GameEvent));
     start_event.type = EVENT_MATCH_START;
     start_event.timestamp = time(NULL);
+    start_event.data.match_start.state = snapshot;
     server_broadcast_event(ctx, &start_event);
 
-    server_emit_turn_event(ctx, EVENT_TURN_STARTED, turn_number, current_player, next_player, ms_per_turn);
+    server_broadcast_current_turn(ctx, 1, NULL);
 }
 
-static void server_stop_match(ServerContext *ctx, const char *reason)
+// Emit a turn event to all players
+static void server_emit_turn_event(ServerContext *ctx, EventType type, int turn_number, int current_id, int next_id, int is_match_start, const EventPayload_UserAction *last_action)
+{
+    int viewers[MAX_PLAYERS];
+    int viewer_count = server_collect_active_players(ctx, viewers, MAX_PLAYERS);
+
+    EventPayload_UserAction empty_action;
+    memset(&empty_action, 0, sizeof(empty_action));
+    empty_action.player_id = -1;
+    empty_action.action_type = USER_ACTION_NONE;
+    const EventPayload_UserAction *action_payload = last_action ? last_action : &empty_action;
+
+    for (int i = 0; i < viewer_count; ++i)
+    {
+        PlayerGameState snapshot;
+        if (!server_build_player_snapshot(ctx, viewers[i], &snapshot))
+        {
+            continue;
+        }
+
+        GameEvent event;
+        memset(&event, 0, sizeof(GameEvent));
+        event.type = type;
+        event.timestamp = time(NULL);
+        event.data.turn.current_player_id = current_id;
+        event.data.turn.next_player_id = next_id;
+        event.data.turn.turn_number = turn_number;
+        event.data.turn.is_match_start = is_match_start;
+        event.data.turn.last_action = *action_payload;
+        event.data.turn.game = snapshot;
+
+        server_send_event_to(ctx, viewers[i], &event);
+    }
+}
+
+// Broadcast current turn info to all players
+static void server_broadcast_current_turn(ServerContext *ctx, int is_match_start, const EventPayload_UserAction *last_action)
 {
     pthread_mutex_lock(&ctx->state_mutex);
-    ctx->game_state.match_started = 0;
-    ctx->game_state.turn.current_player_id = -1;
+    if (!ctx->game_state.match_started)
+    {
+        pthread_mutex_unlock(&ctx->state_mutex);
+        return;
+    }
+    int current_id = ctx->game_state.turn.current_player_id;
+    if (current_id < 0)
+    {
+        pthread_mutex_unlock(&ctx->state_mutex);
+        return;
+    }
+    int turn_number = ctx->game_state.turn.turn_number;
+    int next_id = server_next_active_player(ctx, current_id);
     pthread_mutex_unlock(&ctx->state_mutex);
 
-    GameEvent stop_event;
-    memset(&stop_event, 0, sizeof(GameEvent));
-    stop_event.type = EVENT_MATCH_STOP;
-    stop_event.timestamp = time(NULL);
-    stop_event.data.error.error_code = 0;
-    if (reason)
-    {
-        strncpy(stop_event.data.error.message, reason, sizeof(stop_event.data.error.message) - 1);
-    }
-    server_broadcast_event(ctx, &stop_event);
+    server_emit_turn_event(ctx, EVENT_TURN_STARTED, turn_number, current_id, next_id, is_match_start, last_action);
 }
 
-static void server_emit_turn_event(ServerContext *ctx, EventType type, int turn_number, int current_id, int next_id, int ms_remaining)
-{
-    GameEvent event;
-    memset(&event, 0, sizeof(GameEvent));
-    event.type = type;
-    event.timestamp = time(NULL);
-    event.data.turn.current_player_id = current_id;
-    event.data.turn.next_player_id = next_id;
-    event.data.turn.turn_number = turn_number;
-    event.data.turn.ms_remaining = ms_remaining;
-    server_broadcast_event(ctx, &event);
-}
-
-static void server_advance_turn(ServerContext *ctx)
+// Advance to the next player's turn
+static void server_advance_turn(ServerContext *ctx, const EventPayload_UserAction *last_action)
 {
     pthread_mutex_lock(&ctx->state_mutex);
     if (!ctx->game_state.match_started)
@@ -728,15 +921,14 @@ static void server_advance_turn(ServerContext *ctx)
 
     ctx->game_state.turn.current_player_id = next_player;
     ctx->game_state.turn.turn_number += 1;
-    ctx->game_state.turn.turn_started_at = time(NULL);
     int current_turn = ctx->game_state.turn.current_player_id;
-    int ms_per_turn = ctx->game_state.turn.ms_per_turn;
     int turn_number = ctx->game_state.turn.turn_number;
     int following = server_next_active_player(ctx, current_turn);
     pthread_mutex_unlock(&ctx->state_mutex);
-    server_emit_turn_event(ctx, EVENT_TURN_STARTED, turn_number, current_turn, following, ms_per_turn);
+    server_emit_turn_event(ctx, EVENT_TURN_STARTED, turn_number, current_turn, following, 0, last_action);
 }
 
+// Find the next active player after a given player
 static int server_next_active_player(ServerContext *ctx, int start_after)
 {
     if (ctx->game_state.player_count == 0)
@@ -757,19 +949,8 @@ static int server_next_active_player(ServerContext *ctx, int start_after)
     return -1;
 }
 
-static void server_emit_full_defense_event(ServerContext *ctx, int player_id)
-{
-    GameEvent defense_event;
-    memset(&defense_event, 0, sizeof(GameEvent));
-    defense_event.type = EVENT_DEFENSE_FULL;
-    defense_event.timestamp = time(NULL);
-    defense_event.data.defense.defender_id = player_id;
-    defense_event.data.defense.was_full_defense = 1;
-    defense_event.data.defense.stars_reset = 1;
-    server_broadcast_event(ctx, &defense_event);
-}
-
-static void server_emit_threshold_event(ServerContext *ctx, int player_id, int current_total)
+// Emit a star threshold event
+static void server_emit_threshold_event(ServerContext *ctx, int player_id)
 {
     GameEvent threshold;
     memset(&threshold, 0, sizeof(GameEvent));
@@ -777,10 +958,79 @@ static void server_emit_threshold_event(ServerContext *ctx, int player_id, int c
     threshold.timestamp = time(NULL);
     threshold.data.threshold.player_id = player_id;
     threshold.data.threshold.threshold = STAR_WARNING_THRESHOLD;
-    threshold.data.threshold.current_total = current_total;
     server_broadcast_event(ctx, &threshold);
 }
 
+// Emit host update event
+static void server_emit_host_update(ServerContext *ctx, int host_id, const char *host_name)
+{
+    GameEvent update;
+    memset(&update, 0, sizeof(GameEvent));
+    update.type = EVENT_HOST_UPDATED;
+    update.timestamp = time(NULL);
+    update.data.host_update.host_player_id = host_id;
+    if (host_name && host_name[0] != '\0')
+    {
+        strncpy(update.data.host_update.host_player_name, host_name, MAX_NAME_LEN - 1);
+        update.data.host_update.host_player_name[MAX_NAME_LEN - 1] = '\0';
+    }
+    else
+    {
+        update.data.host_update.host_player_name[0] = '\0';
+    }
+    server_broadcast_event(ctx, &update);
+}
+
+// Send error event to a player
+static void server_send_error_event(ServerContext *ctx, int player_id, int error_code, const char *message)
+{
+    if (player_id < 0)
+        return;
+
+    GameEvent error_event;
+    memset(&error_event, 0, sizeof(GameEvent));
+    error_event.type = EVENT_ERROR;
+    error_event.timestamp = time(NULL);
+    error_event.data.error.error_code = error_code;
+    if (message)
+    {
+        strncpy(error_event.data.error.message, message, sizeof(error_event.data.error.message) - 1);
+    }
+    else
+    {
+        strncpy(error_event.data.error.message, "Unknown error", sizeof(error_event.data.error.message) - 1);
+    }
+    error_event.data.error.message[sizeof(error_event.data.error.message) - 1] = '\0';
+
+    server_send_event_to(ctx, player_id, &error_event);
+}
+
+// Select the host player (must be called with mutex locked)
+static int server_select_host_locked(ServerContext *ctx)
+{
+    if (!ctx)
+        return -1;
+
+    int current = ctx->game_state.host_player_id;
+    if (current >= 0 && current < MAX_PLAYERS && ctx->game_state.players[current].is_active)
+    {
+        return current;
+    }
+
+    for (int i = 0; i < MAX_PLAYERS; ++i)
+    {
+        if (ctx->game_state.players[i].is_active)
+        {
+            ctx->game_state.host_player_id = i;
+            return i;
+        }
+    }
+
+    ctx->game_state.host_player_id = -1;
+    return -1;
+}
+
+// Convert health to coarse percent (25/50/75/100)
 static int to_coarse_percent(int current, int max)
 {
     if (max <= 0)
@@ -797,6 +1047,7 @@ static int to_coarse_percent(int current, int max)
     return 100;
 }
 
+// Clamp integer value between min and max
 static int clamp_int(int value, int min, int max)
 {
     if (value < min)
