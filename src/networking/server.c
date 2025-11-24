@@ -4,6 +4,7 @@
 #include "../../include/server/main.h"
 #include "../../include/networking/network.h"
 #include <arpa/inet.h>
+#include <errno.h>
 #include <netinet/in.h>
 #include <pthread.h>
 #include <stdio.h>
@@ -58,6 +59,9 @@ static int to_coarse_percent(int current, int max);
 static int clamp_int(int value, int min, int max);
 static int server_select_host_locked(ServerContext *ctx);
 static void server_send_error_event(ServerContext *ctx, int player_id, int error_code, const char *message);
+static int server_start_discovery_service(ServerContext *ctx);
+static void server_stop_discovery_service(ServerContext *ctx);
+static void *server_discovery_thread(void *arg);
 
 // Create a new server context
 ServerContext *server_create()
@@ -69,8 +73,10 @@ ServerContext *server_create()
     memset(ctx, 0, sizeof(ServerContext));
     ctx->max_players = MAX_PLAYERS;
     ctx->server_socket = -1;
+    ctx->discovery_socket = -1;
     ctx->running = 0;
     ctx->accept_thread = 0;
+    ctx->discovery_thread = 0;
     ctx->game_state.host_player_id = -1;
     ctx->game_state.turn.current_player_id = -1;
     ctx->game_state.winner_id = -1;
@@ -134,12 +140,19 @@ void server_start(ServerContext *ctx)
     }
 
     ctx->running = 1;
+
+    if (server_start_discovery_service(ctx) != 0)
+    {
+        fprintf(stderr, "[Server] Warning: LAN discovery responder unavailable.\n");
+    }
+
     if (pthread_create(&ctx->accept_thread, NULL, server_accept_thread, ctx) != 0)
     {
         server_main_on_accept_thread_failed(ctx, "Failed to create accept thread");
         ctx->running = 0;
         net_close_socket(ctx->server_socket);
         ctx->server_socket = -1;
+        server_stop_discovery_service(ctx);
     }
     else
     {
@@ -155,6 +168,8 @@ void server_stop(ServerContext *ctx)
 
     server_main_on_stopping(ctx);
     ctx->running = 0;
+
+    server_stop_discovery_service(ctx);
 
     if (ctx->server_socket >= 0)
     {
@@ -187,6 +202,115 @@ void server_stop(ServerContext *ctx)
     ctx->game_state.turn.current_player_id = -1;
     ctx->game_state.turn.turn_number = 0;
     pthread_mutex_unlock(&ctx->state_mutex);
+}
+
+static int server_start_discovery_service(ServerContext *ctx)
+{
+    if (!ctx)
+        return -1;
+
+    if (ctx->discovery_socket >= 0)
+        return 0;
+
+    ctx->discovery_socket = socket(AF_INET, SOCK_DGRAM, 0);
+    if (ctx->discovery_socket < 0)
+    {
+        return -1;
+    }
+
+    int reuse = 1;
+    if (setsockopt(ctx->discovery_socket, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse)) < 0)
+    {
+        close(ctx->discovery_socket);
+        ctx->discovery_socket = -1;
+        return -1;
+    }
+
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    addr.sin_port = htons(DEFAULT_PORT);
+
+    if (bind(ctx->discovery_socket, (struct sockaddr *)&addr, sizeof(addr)) < 0)
+    {
+        close(ctx->discovery_socket);
+        ctx->discovery_socket = -1;
+        return -1;
+    }
+
+    if (pthread_create(&ctx->discovery_thread, NULL, server_discovery_thread, ctx) != 0)
+    {
+        close(ctx->discovery_socket);
+        ctx->discovery_socket = -1;
+        ctx->discovery_thread = 0;
+        return -1;
+    }
+
+    return 0;
+}
+
+static void server_stop_discovery_service(ServerContext *ctx)
+{
+    if (!ctx)
+        return;
+
+    if (ctx->discovery_socket >= 0)
+    {
+        close(ctx->discovery_socket);
+        ctx->discovery_socket = -1;
+    }
+
+    if (ctx->discovery_thread)
+    {
+        pthread_join(ctx->discovery_thread, NULL);
+        ctx->discovery_thread = 0;
+    }
+}
+
+static void *server_discovery_thread(void *arg)
+{
+    ServerContext *ctx = (ServerContext *)arg;
+    while (ctx && ctx->running)
+    {
+        struct sockaddr_in client_addr;
+        socklen_t addrlen = sizeof(client_addr);
+        char buffer[128];
+        ssize_t bytes = recvfrom(ctx->discovery_socket, buffer, sizeof(buffer) - 1, 0, (struct sockaddr *)&client_addr, &addrlen);
+        if (bytes < 0)
+        {
+            if (!ctx->running)
+            {
+                break;
+            }
+            if (errno == EINTR)
+            {
+                continue;
+            }
+            if (errno == EBADF)
+            {
+                break;
+            }
+            continue;
+        }
+
+        buffer[bytes] = '\0';
+        if (strncmp(buffer, ARMADA_DISCOVERY_REQUEST, strlen(ARMADA_DISCOVERY_REQUEST)) != 0)
+        {
+            continue;
+        }
+
+        int player_count = 0;
+        pthread_mutex_lock(&ctx->state_mutex);
+        player_count = ctx->game_state.player_count;
+        pthread_mutex_unlock(&ctx->state_mutex);
+
+        char response[128];
+        snprintf(response, sizeof(response), "%s %d %d %d", ARMADA_DISCOVERY_RESPONSE, DEFAULT_PORT, player_count, ctx->max_players);
+        sendto(ctx->discovery_socket, response, strlen(response), 0, (struct sockaddr *)&client_addr, addrlen);
+    }
+
+    return NULL;
 }
 
 // Accept thread: listens for new client connections

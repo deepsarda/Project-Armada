@@ -14,8 +14,10 @@ typedef struct ServerContext
 
     int server_socket;
     int player_sockets[MAX_PLAYERS];
+    int discovery_socket;
     pthread_mutex_t state_mutex;
     pthread_t accept_thread;
+    pthread_t discovery_thread;
 } ServerContext;
 
 ServerContext *server_create();

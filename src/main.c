@@ -1,6 +1,7 @@
 #include "../include/client/client_api.h"
 #include "../include/server/server_api.h"
 #include "../include/networking/network.h"
+#include "../include/client/tui_bridge.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -8,16 +9,16 @@
 #include <sys/select.h>
 #include <sys/time.h>
 
-#define MAX_DISCOVERED_SERVERS 32
 #define INPUT_BUFFER 128
 
 static void read_line(char *buffer, size_t size);
 static int read_int_choice(void);
 static int stdin_has_input(void);
 static void run_server_flow(void);
-static void run_manual_join(void);
-static void run_scan_join(void);
-static void run_client_flow(const char *address);
+static void run_manual_join(const char *preferred_name);
+static void run_scan_join(int max_hosts, int timeout_ms, const char *preferred_name);
+static void run_client_flow(const char *address, const char *preferred_name);
+static int handle_launcher_selection(const ArmadaTuiSelection *selection);
 
 int main(void)
 {
@@ -26,31 +27,26 @@ int main(void)
 
     for (;;)
     {
-        printf("Menu:\n");
-        printf(" 1) Host a new server\n");
-        printf(" 2) Join via LAN scan\n");
-        printf(" 3) Join via manual IP\n");
-        printf(" 4) Quit\n> ");
-        fflush(stdout);
+        ArmadaTuiSelection selection;
+        memset(&selection, 0, sizeof(selection));
 
-        int choice = read_int_choice();
-        switch (choice)
+        int tui_status = armada_tui_launch(&selection);
+        if (tui_status == ARMADA_TUI_STATUS_EXIT_REQUESTED)
         {
-        case 1:
-            run_server_flow();
-            break;
-        case 2:
-            run_scan_join();
-            break;
-        case 3:
-            run_manual_join();
-            break;
-        case 4:
             printf("Goodbye!\n");
             return 0;
-        default:
-            printf("Unknown option. Please try again.\n\n");
-            break;
+        }
+
+        if (tui_status != ARMADA_TUI_STATUS_OK)
+        {
+            fprintf(stderr, "Launcher UI exited unexpectedly (%d).\n", tui_status);
+            return 1;
+        }
+
+        if (!handle_launcher_selection(&selection))
+        {
+            printf("Goodbye!\n");
+            return 0;
         }
     }
 }
@@ -97,7 +93,7 @@ static void run_server_flow(void)
     printf("Server stopped.\n\n");
 }
 
-static void run_manual_join(void)
+static void run_manual_join(const char *preferred_name)
 {
     char address[INPUT_BUFFER];
     printf("Enter server IP (blank to cancel): ");
@@ -108,13 +104,21 @@ static void run_manual_join(void)
         printf("Manual join canceled.\n\n");
         return;
     }
-    run_client_flow(address);
+    run_client_flow(address, preferred_name);
 }
 
-static void run_scan_join(void)
+static void run_scan_join(int max_hosts, int timeout_ms, const char *preferred_name)
 {
-    char hosts[MAX_DISCOVERED_SERVERS][64];
-    int found = net_discover_lan_servers(hosts, MAX_DISCOVERED_SERVERS, DEFAULT_PORT, 200);
+    int capped_hosts = max_hosts;
+    if (capped_hosts <= 0 || capped_hosts > ARMADA_DISCOVERY_MAX_RESULTS)
+    {
+        capped_hosts = ARMADA_DISCOVERY_MAX_RESULTS;
+    }
+
+    int effective_timeout = timeout_ms > 0 ? timeout_ms : 200;
+
+    char hosts[ARMADA_DISCOVERY_MAX_RESULTS][64];
+    int found = net_discover_lan_servers(hosts, capped_hosts, DEFAULT_PORT, effective_timeout);
     if (found <= 0)
     {
         printf("No servers discovered on the LAN.\n\n");
@@ -135,21 +139,33 @@ static void run_scan_join(void)
         return;
     }
 
-    run_client_flow(hosts[choice - 1]);
+    run_client_flow(hosts[choice - 1], preferred_name);
 }
 
-static void run_client_flow(const char *address)
+static void run_client_flow(const char *address, const char *preferred_name)
 {
     if (!address)
         return;
 
     char name[32];
-    printf("Enter player name (default Voyager): ");
+    char default_name[sizeof(name)];
+    if (preferred_name && preferred_name[0] != '\0')
+    {
+        strncpy(default_name, preferred_name, sizeof(default_name) - 1);
+        default_name[sizeof(default_name) - 1] = '\0';
+    }
+    else
+    {
+        strncpy(default_name, "Voyager", sizeof(default_name) - 1);
+        default_name[sizeof(default_name) - 1] = '\0';
+    }
+
+    printf("Enter player name (default %s): ", default_name);
     fflush(stdout);
     read_line(name, sizeof(name));
     if (name[0] == '\0')
     {
-        strncpy(name, "Voyager", sizeof(name) - 1);
+        strncpy(name, default_name, sizeof(name) - 1);
         name[sizeof(name) - 1] = '\0';
     }
 
@@ -208,6 +224,48 @@ static void run_client_flow(const char *address)
     client_disconnect(client);
     client_destroy(client);
     printf("Disconnected from server.\n\n");
+}
+
+static int handle_launcher_selection(const ArmadaTuiSelection *selection)
+{
+    if (!selection)
+    {
+        return 1;
+    }
+
+    const char *preferred_name = NULL;
+    if (selection->player_name[0] != '\0')
+    {
+        preferred_name = selection->player_name;
+    }
+
+    int scan_timeout = selection->scan_timeout_ms > 0 ? selection->scan_timeout_ms : 200;
+    int scan_limit = selection->scan_result_limit > 0 ? selection->scan_result_limit : ARMADA_DISCOVERY_MAX_RESULTS;
+
+    switch (selection->action)
+    {
+    case ARMADA_TUI_ACTION_HOST:
+        run_server_flow();
+        return 1;
+    case ARMADA_TUI_ACTION_SCAN:
+        run_scan_join(scan_limit, scan_timeout, preferred_name);
+        return 1;
+    case ARMADA_TUI_ACTION_MANUAL_JOIN:
+        if (selection->manual_address[0] != '\0')
+        {
+            run_client_flow(selection->manual_address, preferred_name);
+        }
+        else
+        {
+            run_manual_join(preferred_name);
+        }
+        return 1;
+    case ARMADA_TUI_ACTION_QUIT:
+        return 0;
+    case ARMADA_TUI_ACTION_NONE:
+    default:
+        return 1;
+    }
 }
 
 static void read_line(char *buffer, size_t size)

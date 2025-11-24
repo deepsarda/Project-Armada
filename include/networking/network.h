@@ -5,6 +5,8 @@
 #include <stddef.h>
 
 #define DEFAULT_PORT 8080
+#define ARMADA_DISCOVERY_REQUEST "ARMADA_DISCOVER_V1"
+#define ARMADA_DISCOVERY_RESPONSE "ARMADA_SERVER_V1"
 
 // Basic socket operations
 int net_create_server_socket(int port);

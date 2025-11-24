@@ -10,6 +10,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <sys/select.h>
+#include <sys/time.h>
 
 /**
  * Create a TCP server socket bound to the given port.
@@ -204,6 +205,9 @@ static int net_host_list_contains(char hosts[][64], int count, const char *candi
     return 0;
 }
 
+static int net_discover_lan_servers_udp(char hosts[][64], int max_hosts, int port, int timeout_ms);
+static int net_discover_lan_servers_tcp(char hosts[][64], int max_hosts, int port, int timeout_ms);
+
 /**
  * Probe if a TCP server is running at host:port with timeout.
  * Returns 1 if server is reachable, 0 otherwise.
@@ -238,7 +242,7 @@ int net_probe_server(const char *host, int port, int timeout_ms)
     memset(&serv_addr, 0, sizeof(serv_addr));
     serv_addr.sin_family = AF_INET;
     serv_addr.sin_port = htons(port);
-    
+
     if (inet_pton(AF_INET, host, &serv_addr.sin_addr) <= 0)
     {
         close(sock);
@@ -310,11 +314,21 @@ int net_discover_lan_servers(char hosts[][64], int max_hosts, int port, int time
         timeout_ms = 300;
     }
 
+    int found = net_discover_lan_servers_udp(hosts, max_hosts, port, timeout_ms);
+    if (found > 0)
+    {
+        return found;
+    }
+
+    return net_discover_lan_servers_tcp(hosts, max_hosts, port, timeout_ms);
+}
+
+static int net_discover_lan_servers_tcp(char hosts[][64], int max_hosts, int port, int timeout_ms)
+{
     int found = 0;
     const char *seed_hosts[] = {"127.0.0.1", "localhost"};
     const size_t seed_count = sizeof(seed_hosts) / sizeof(seed_hosts[0]);
 
-    // Probe seed hosts
     for (size_t i = 0; i < seed_count && found < max_hosts; ++i)
     {
         if (net_probe_server(seed_hosts[i], port, timeout_ms))
@@ -329,7 +343,6 @@ int net_discover_lan_servers(char hosts[][64], int max_hosts, int port, int time
         }
     }
 
-    // Probe common subnets
     const char *subnets[] = {"192.168.1.", "192.168.0.", "10.0.0."};
     const size_t subnet_count = sizeof(subnets) / sizeof(subnets[0]);
     const int hosts_per_subnet = 20;
@@ -353,5 +366,132 @@ int net_discover_lan_servers(char hosts[][64], int max_hosts, int port, int time
         }
     }
 
+    return found;
+}
+
+static long net_elapsed_ms_since(const struct timeval *start)
+{
+    struct timeval now;
+    gettimeofday(&now, NULL);
+    long sec = now.tv_sec - start->tv_sec;
+    long usec = now.tv_usec - start->tv_usec;
+    return sec * 1000L + usec / 1000L;
+}
+
+static int net_discover_lan_servers_udp(char hosts[][64], int max_hosts, int port, int timeout_ms)
+{
+    if (max_hosts <= 0)
+    {
+        return 0;
+    }
+
+    int sock = socket(AF_INET, SOCK_DGRAM, 0);
+    if (sock < 0)
+    {
+        return 0;
+    }
+
+    int broadcast = 1;
+    setsockopt(sock, SOL_SOCKET, SO_BROADCAST, &broadcast, sizeof(broadcast));
+
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(port);
+
+    const char *targets[] = {
+        "255.255.255.255",
+        "192.168.0.255",
+        "192.168.1.255",
+        "10.0.0.255",
+        "127.0.0.1"};
+    const size_t target_count = sizeof(targets) / sizeof(targets[0]);
+    char payload[64];
+    snprintf(payload, sizeof(payload), "%s %d", ARMADA_DISCOVERY_REQUEST, port);
+
+    for (size_t i = 0; i < target_count; ++i)
+    {
+        if (inet_pton(AF_INET, targets[i], &addr.sin_addr) <= 0)
+        {
+            continue;
+        }
+        sendto(sock, payload, strlen(payload), 0, (struct sockaddr *)&addr, sizeof(addr));
+    }
+
+    int found = 0;
+    struct timeval start;
+    gettimeofday(&start, NULL);
+
+    while (found < max_hosts)
+    {
+        long elapsed = net_elapsed_ms_since(&start);
+        if (elapsed >= timeout_ms)
+        {
+            break;
+        }
+
+        long remaining = timeout_ms - elapsed;
+        struct timeval wait;
+        wait.tv_sec = remaining / 1000;
+        wait.tv_usec = (remaining % 1000) * 1000;
+        if (wait.tv_sec == 0 && wait.tv_usec == 0)
+        {
+            wait.tv_usec = 1000;
+        }
+
+        fd_set readfds;
+        FD_ZERO(&readfds);
+        FD_SET(sock, &readfds);
+
+        int ready = select(sock + 1, &readfds, NULL, NULL, &wait);
+        if (ready < 0)
+        {
+            if (errno == EINTR)
+            {
+                continue;
+            }
+            break;
+        }
+        if (ready == 0)
+        {
+            continue;
+        }
+
+        struct sockaddr_in from;
+        socklen_t from_len = sizeof(from);
+        char buffer[128];
+        ssize_t len = recvfrom(sock, buffer, sizeof(buffer) - 1, 0, (struct sockaddr *)&from, &from_len);
+        if (len <= 0)
+        {
+            if (len < 0 && errno == EINTR)
+            {
+                continue;
+            }
+            break;
+        }
+
+        buffer[len] = '\0';
+        if (strncmp(buffer, ARMADA_DISCOVERY_RESPONSE, strlen(ARMADA_DISCOVERY_RESPONSE)) != 0)
+        {
+            continue;
+        }
+
+        char address[64];
+        if (!inet_ntop(AF_INET, &from.sin_addr, address, sizeof(address)))
+        {
+            continue;
+        }
+
+        if (net_host_list_contains(hosts, found, address))
+        {
+            continue;
+        }
+
+        strncpy(hosts[found], address, 63);
+        hosts[found][63] = '\0';
+        ++found;
+    }
+
+    close(sock);
     return found;
 }
