@@ -20,11 +20,20 @@ typedef struct ServerContext
     pthread_t discovery_thread;
 } ServerContext;
 
-ServerContext *server_create();
-void server_destroy(ServerContext *ctx);
+#ifdef __cplusplus
+extern "C"
+{
+#endif
 
-int server_init(ServerContext *ctx, int max_players);
-void server_start(ServerContext *ctx);
-void server_stop(ServerContext *ctx);
+    ServerContext *server_create();
+    void server_destroy(ServerContext *ctx);
+
+    int server_init(ServerContext *ctx, int max_players);
+    void server_start(ServerContext *ctx);
+    void server_stop(ServerContext *ctx);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif // SERVER_API_H

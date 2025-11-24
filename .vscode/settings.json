@@ -2,6 +2,9 @@
     "files.associations": {
         "*.ejs": "html",
         "network.h": "c",
-        "game_types.h": "c"
+        "game_types.h": "c",
+        "sstream": "cpp",
+        "mutex": "cpp",
+        "chrono": "cpp"
     }
 }

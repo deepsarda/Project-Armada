@@ -1,494 +1,610 @@
 #include "../../include/client/tui_bridge.h"
+#include "../../include/client/client_api.h"
+#include "../../include/client/ui_notifications.h"
+#include "../../include/common/events.h"
+#include "../../include/networking/network.h"
+#include "../../include/server/server_api.h"
+#include <ftxui/component/component.hpp>
+#include <ftxui/component/screen_interactive.hpp>
+#include <ftxui/dom/elements.hpp>
 
 #include <algorithm>
-#include <array>
-#include <cctype>
+#include <atomic>
+#include <chrono>
+#include <deque>
 #include <cstdio>
-#include <cstdlib>
-#include <cstring>
+#include <memory>
+#include <mutex>
+#include <sstream>
 #include <string>
-#include <string_view>
+#include <thread>
 #include <vector>
-
-#include <ox/ox.hpp>
 
 namespace
 {
-    using ox::Application;
-    using ox::Canvas;
-    using ox::Key;
+    using namespace std::chrono_literals;
+    using ftxui::bold;
+    using ftxui::border;
+    using ftxui::Button;
+    using ftxui::CatchEvent;
+    using ftxui::Component;
+    namespace Container = ftxui::Container;
+    using ftxui::dim;
+    using ftxui::Element;
+    using ftxui::Event;
+    using ftxui::flex;
+    using ftxui::GREATER_THAN;
+    using ftxui::hbox;
+    using ftxui::HEIGHT;
+    using ftxui::Input;
+    using ftxui::paragraph;
+    using ftxui::Radiobox;
+    using ftxui::Renderer;
+    using ftxui::ScreenInteractive;
+    using ftxui::separator;
+    using ftxui::size;
+    using ftxui::text;
+    using ftxui::vbox;
+    using ftxui::WIDTH;
+    using ftxui::window;
 
-    constexpr int kDefaultScanTimeoutMs = 400;
-    constexpr int kMinScanTimeoutMs = 100;
-    constexpr int kMaxScanTimeoutMs = 5000;
-    constexpr int kDefaultScanLimit = 8;
-    constexpr int kMinScanLimit = 1;
-
-    enum FieldId : std::size_t
-    {
-        FieldPlayerName = 0,
-        FieldManualAddress,
-        FieldScanTimeout,
-        FieldScanLimit,
-        FieldCount
-    };
-
-    enum ActionId : std::size_t
-    {
-        ActionHost = 0,
-        ActionScan,
-        ActionManualJoin,
-        ActionQuit,
-        ActionCount
-    };
-
-    struct FieldDefinition
-    {
-        std::string label;
-        std::string value;
-        std::string hint;
-        std::size_t max_length;
-        bool numeric_only;
-        int min_value;
-        int max_value;
-        int step;
-        int fallback;
-    };
-
-    enum class FocusType
-    {
-        Field,
-        Action
-    };
-
-    struct FocusItem
-    {
-        FocusType type;
-        std::size_t index;
-    };
-
-    static void copy_into_buffer(const std::string &text, char *buffer, std::size_t buffer_size)
-    {
-        if (!buffer || buffer_size == 0)
-        {
-            return;
-        }
-
-        if (text.empty())
-        {
-            buffer[0] = '\0';
-            return;
-        }
-
-        std::snprintf(buffer, buffer_size, "%s", text.c_str());
-    }
-
-    class LauncherWidget : public ox::Widget
+    class ArmadaApp
     {
     public:
-        explicit LauncherWidget(ArmadaTuiSelection &selection)
-            : Widget{ox::FocusPolicy::Strong, ox::SizePolicy::flex()}, selection_{selection}
-        {
-            init_fields();
-            focus_items_ = {
-                FocusItem{FocusType::Field, FieldPlayerName},
-                FocusItem{FocusType::Field, FieldManualAddress},
-                FocusItem{FocusType::Field, FieldScanTimeout},
-                FocusItem{FocusType::Field, FieldScanLimit},
-                FocusItem{FocusType::Action, ActionHost},
-                FocusItem{FocusType::Action, ActionScan},
-                FocusItem{FocusType::Action, ActionManualJoin},
-                FocusItem{FocusType::Action, ActionQuit},
-            };
-        }
+        ArmadaApp() = default;
 
-        void paint(Canvas c) override
+        int run()
         {
-            ox::fill(c, U' ');
-            int row = 0;
-            draw_header(c, row);
-            row += 2;
-            draw_fields(c, row);
-            row += 1;
-            draw_actions(c, row);
-            row = std::max(row + 1, c.size.height - 3);
-            draw_instructions(c, row);
-        }
+            std::fprintf(stderr, "[armada] ArmadaApp::run begin\n");
+            ScreenInteractive screen = ScreenInteractive::Fullscreen();
+            screen_ = &screen;
+            std::fprintf(stderr, "[armada] ScreenInteractive ready\n");
 
-        void key_press(Key key) override
-        {
-            if (editing_field_ >= 0)
-            {
-                handle_edit_key(key);
-                return;
-            }
+            build_components();
+            std::fprintf(stderr, "[armada] Components built\n");
+            armada_ui_set_log_sink(&ArmadaApp::log_thunk, this);
 
-            switch (key)
-            {
-            case Key::ArrowDown:
-            case Key::Tab:
-                move_focus(+1);
-                break;
-            case Key::ArrowUp:
-            case Key::BackTab:
-                move_focus(-1);
-                break;
-            case Key::ArrowLeft:
-                adjust_numeric_current(-1);
-                break;
-            case Key::ArrowRight:
-                adjust_numeric_current(+1);
-                break;
-            case Key::Enter:
-                activate_current();
-                break;
-            case Key::Escape:
-            case Key::Cancel:
-                selection_.action = ARMADA_TUI_ACTION_QUIT;
-                Application::quit(ARMADA_TUI_STATUS_EXIT_REQUESTED);
-                break;
-            default:
-                break;
-            }
+            auto tab_container = Container::Tab({menu_component_, join_component_, session_component_}, &view_index_);
+            auto root = Renderer(tab_container, [tab_container]
+                                 { return tab_container->Render() | border | size(WIDTH, GREATER_THAN, 72) | size(HEIGHT, GREATER_THAN, 24); });
+
+            std::fprintf(stderr, "[armada] Renderer ready\n");
+
+            root = CatchEvent(root, [&](const Event &event)
+                              {
+                                  if (event == Event::Escape && view_ == View::Session)
+                                  {
+                                      stop_client_session();
+                                      return true;
+                                  }
+                                  if (event == Event::Escape && view_ == View::Join)
+                                  {
+                                      switch_view(View::Menu);
+                                      return true;
+                                  }
+                                  if (event == Event::Character('q'))
+                                  {
+                                      stop_client_session();
+                                      stop_join_scan();
+                                      stop_local_server();
+                                      if (screen_)
+                                      {
+                                          screen_->Exit();
+                                      }
+                                      return true;
+                                  }
+                                  return false; });
+
+            std::fprintf(stderr, "[armada] Entering event loop\n");
+
+            loop_running_.store(true, std::memory_order_release);
+            screen_->Loop(root);
+            loop_running_.store(false, std::memory_order_release);
+            screen_ = nullptr;
+
+            std::fprintf(stderr, "[armada] Event loop exited\n");
+
+            stop_client_session();
+            stop_join_scan();
+            stop_local_server();
+            armada_ui_set_log_sink(nullptr, nullptr);
+            std::fprintf(stderr, "[armada] Run cleanup done\n");
+            return 0;
         }
 
     private:
-        void init_fields()
+        enum class View
         {
-            fields_.fill(FieldDefinition{});
+            Menu = 0,
+            Join = 1,
+            Session = 2
+        };
 
-            auto bootstrap_or_default = [](const char *value, const char *fallback)
+        using ClientPtr = std::unique_ptr<ClientContext, decltype(&client_destroy)>;
+        using ServerPtr = std::unique_ptr<ServerContext, decltype(&server_destroy)>;
+
+        void build_components()
+        {
+            build_menu();
+            build_join();
+            build_session();
+            refresh_lan_hosts({});
+        }
+
+        void build_menu()
+        {
+            auto host_button = Button("Host server", [&]
+                                      { toggle_local_server(); });
+            auto join_button = Button("Join server", [&]
+                                      { switch_view(View::Join); });
+            auto quit_button = Button("Quit", [&]
+                                      {
+                                          stop_client_session();
+                                          stop_join_scan();
+                                          stop_local_server();
+                                          if (screen_)
+                                          {
+                                              screen_->Exit();
+                                          } });
+
+            auto buttons = Container::Vertical({host_button, join_button, quit_button});
+            menu_component_ = Renderer(buttons, [this, buttons]
+                                       {
+                                           auto status = hosting_ ? text("Local server: running on port " + std::to_string(DEFAULT_PORT)) | bold
+                                                                  : text("Local server: idle") | dim;
+                                           return window(text("Project Armada Launcher"),
+                                                         vbox({
+                                                             text("Choose an option to get started."),
+                                                             separator(),
+                                                             status,
+                                                             separator(),
+                                                             buttons->Render(),
+                                                         }) | size(WIDTH, GREATER_THAN, 48)); });
+        }
+
+        void build_join()
+        {
+            name_input_component_ = Input(&player_name_, "Voyager");
+            manual_input_component_ = Input(&manual_ip_, "192.168.0.42");
+            host_list_component_ = Radiobox(&lan_hosts_display_, &selected_host_index_);
+
+            auto connect_discovered = Button("Join selection", [&]
+                                             { connect_to_selection(); });
+            auto connect_manual = Button("Join manual IP", [&]
+                                         { connect_to_manual(); });
+            auto back_button = Button("Back", [&]
+                                      { switch_view(View::Menu); });
+
+            auto buttons = Container::Horizontal({connect_discovered, connect_manual, back_button});
+
+            auto join_stack = Container::Vertical({name_input_component_, manual_input_component_, host_list_component_, buttons});
+            join_component_ = Renderer(join_stack, [this, buttons]
+                                       { return window(text("Join a server"),
+                                                       vbox({
+                                                           text("Set your pilot name, pick a LAN host, or enter a manual IP."),
+                                                           separator(),
+                                                           hbox({text("Player name:") | size(WIDTH, GREATER_THAN, 16), name_input_component_->Render()}) | size(WIDTH, GREATER_THAN, 40),
+                                                           hbox({text("Manual IP:"), manual_input_component_->Render()}),
+                                                           separator(),
+                                                           text("Discovered hosts:"),
+                                                           host_list_component_->Render() | flex,
+                                                           separator(),
+                                                           hbox({text("Scanning every 30s"), separator(), text("Press JOIN to start playing") | dim}),
+                                                           buttons->Render(),
+                                                       }) | flex); });
+        }
+
+        void build_session()
+        {
+            auto end_turn = Button("End turn", [&]
+                                   { send_end_turn(); });
+            auto start_match = Button("Start match", [&]
+                                      { send_start_request(); });
+            auto disconnect = Button("Disconnect", [&]
+                                     { stop_client_session(); });
+
+            auto controls = Container::Horizontal({end_turn, start_match, disconnect});
+            session_component_ = Renderer(controls, [this, controls]
+                                          { return window(text("Client session"), render_session(controls)); });
+        }
+
+        Element render_session(const Component &controls)
+        {
+            std::string server = active_address_.empty() ? "<none>" : active_address_;
+            std::string status;
             {
-                if (value && value[0] != '\0')
+                std::lock_guard<std::mutex> lock(client_mutex_);
+                if (client_ && client_->connected)
                 {
-                    return std::string{value};
+                    status = "Connected";
                 }
-                return std::string{fallback};
-            };
-
-            fields_[FieldPlayerName] = FieldDefinition{
-                .label = "Player name",
-                .value = bootstrap_or_default(selection_.player_name, "Voyager"),
-                .hint = "Voyager",
-                .max_length = MAX_NAME_LEN - 1,
-                .numeric_only = false,
-                .min_value = 0,
-                .max_value = 0,
-                .step = 0,
-                .fallback = 0};
-
-            fields_[FieldManualAddress] = FieldDefinition{
-                .label = "Manual server IP",
-                .value = selection_.manual_address,
-                .hint = "e.g. 192.168.1.50",
-                .max_length = sizeof(selection_.manual_address) - 1,
-                .numeric_only = false,
-                .min_value = 0,
-                .max_value = 0,
-                .step = 0,
-                .fallback = 0};
-
-            int timeout_seed = selection_.scan_timeout_ms > 0 ? selection_.scan_timeout_ms : kDefaultScanTimeoutMs;
-            fields_[FieldScanTimeout] = FieldDefinition{
-                .label = "LAN scan timeout (ms)",
-                .value = std::to_string(std::clamp(timeout_seed, kMinScanTimeoutMs, kMaxScanTimeoutMs)),
-                .hint = std::to_string(kDefaultScanTimeoutMs),
-                .max_length = 5,
-                .numeric_only = true,
-                .min_value = kMinScanTimeoutMs,
-                .max_value = kMaxScanTimeoutMs,
-                .step = 50,
-                .fallback = kDefaultScanTimeoutMs};
-
-            int limit_seed = selection_.scan_result_limit > 0 ? selection_.scan_result_limit : kDefaultScanLimit;
-            fields_[FieldScanLimit] = FieldDefinition{
-                .label = "Max discovered servers",
-                .value = std::to_string(std::clamp(limit_seed, kMinScanLimit, ARMADA_DISCOVERY_MAX_RESULTS)),
-                .hint = std::to_string(kDefaultScanLimit),
-                .max_length = 2,
-                .numeric_only = true,
-                .min_value = kMinScanLimit,
-                .max_value = ARMADA_DISCOVERY_MAX_RESULTS,
-                .step = 1,
-                .fallback = kDefaultScanLimit};
-        }
-
-        void draw_header(Canvas c, int &row) const
-        {
-            static constexpr std::string_view title = "Project Armada";
-            static constexpr std::string_view subtitle = "LAN Launcher";
-            draw_centered(c, row++, title);
-            draw_centered(c, row++, subtitle);
-        }
-
-        void draw_centered(Canvas c, int row, std::string_view text) const
-        {
-            int start_x = std::max(0, (c.size.width - static_cast<int>(text.size())) / 2);
-            ox::put(c, {.x = start_x, .y = row}, text);
-        }
-
-        [[nodiscard]] std::string resolved_value(std::size_t field_index) const
-        {
-            const auto &field = fields_[field_index];
-            if (field.value.empty())
-            {
-                return field.hint;
-            }
-            return field.value;
-        }
-
-        void draw_fields(Canvas c, int &row) const
-        {
-            constexpr int margin = 2;
-            for (std::size_t i = 0; i < fields_.size(); ++i)
-            {
-                const auto &field = fields_[i];
-                bool focus = is_focus(FocusType::Field, i);
-                bool editing = (editing_field_ == static_cast<int>(i));
-                std::string value = resolved_value(i);
-                if (editing)
+                else
                 {
-                    value.push_back('_');
+                    status = "Disconnected";
                 }
-                std::string line = (focus ? "> " : "  ");
-                line += field.label + ": " + value;
-                ox::put(c, {.x = margin, .y = row++}, line);
             }
-        }
 
-        void draw_actions(Canvas c, int &row) const
-        {
-            constexpr int margin = 2;
-            static constexpr std::array<std::string_view, ActionCount> labels = {
-                "Host a new server",
-                "Join via LAN scan",
-                "Join via manual IP",
-                "Quit"};
-
-            for (std::size_t i = 0; i < labels.size(); ++i)
+            std::string log_text;
             {
-                bool focus = is_focus(FocusType::Action, i);
-                std::string detail;
-                if (i == ActionScan)
+                std::lock_guard<std::mutex> lock(log_mutex_);
+                std::ostringstream oss;
+                for (const auto &line : logs_)
                 {
-                    detail = " (" + resolved_value(FieldScanTimeout) + " ms, up to " + resolved_value(FieldScanLimit) + ")";
+                    oss << line << '\n';
                 }
-                else if (i == ActionManualJoin && !fields_[FieldManualAddress].value.empty())
+                log_text = oss.str();
+            }
+
+            return vbox({
+                       text("Player: " + (player_name_.empty() ? std::string{"(unnamed)"} : player_name_)),
+                       text("Server: " + server),
+                       text("Status: " + status),
+                       separator(),
+                       paragraph(log_text.empty() ? std::string{"Waiting for events..."} : log_text) | flex,
+                       separator(),
+                       controls->Render(),
+                   }) |
+                   flex;
+        }
+
+        void switch_view(View next)
+        {
+            if (view_ == next)
+            {
+                return;
+            }
+
+            if (view_ == View::Join)
+            {
+                stop_join_scan();
+            }
+
+            view_ = next;
+            view_index_ = static_cast<int>(view_);
+
+            if (view_ == View::Join)
+            {
+                start_join_scan();
+            }
+            request_redraw();
+        }
+
+        void start_join_scan()
+        {
+            stop_join_scan();
+            scanning_ = true;
+            scan_thread_ = std::thread([this]()
+                                       {
+                                           constexpr auto kScanSleepChunk = 100ms;
+                                           constexpr int kChunksPerRefresh = static_cast<int>(std::chrono::seconds(30) / kScanSleepChunk);
+                                           while (scanning_)
+                                           {
+                                               char hosts_raw[ARMADA_DISCOVERY_MAX_RESULTS][64] = {};
+                                               int found = net_discover_lan_servers(hosts_raw, ARMADA_DISCOVERY_MAX_RESULTS, DEFAULT_PORT, 200);
+                                               std::vector<std::string> hosts;
+                                               if (found > 0)
+                                               {
+                                                   hosts.reserve(found);
+                                                   for (int i = 0; i < found; ++i)
+                                                   {
+                                                       hosts.emplace_back(hosts_raw[i]);
+                                                   }
+                                               }
+                                               refresh_lan_hosts(hosts);
+                                               for (int tick = 0; tick < kChunksPerRefresh && scanning_; ++tick)
+                                               {
+                                                   std::this_thread::sleep_for(kScanSleepChunk);
+                                               }
+                                           } });
+        }
+
+        void stop_join_scan()
+        {
+            scanning_ = false;
+            if (scan_thread_.joinable())
+            {
+                scan_thread_.join();
+            }
+        }
+
+        void refresh_lan_hosts(const std::vector<std::string> &hosts)
+        {
+            std::lock_guard<std::mutex> lock(host_mutex_);
+            lan_hosts_ = hosts;
+            lan_hosts_display_.clear();
+            if (lan_hosts_.empty())
+            {
+                lan_hosts_display_.push_back(L"(No LAN servers detected)");
+                selected_host_index_ = 0;
+            }
+            else
+            {
+                for (const auto &host : lan_hosts_)
                 {
-                    detail = " [" + fields_[FieldManualAddress].value + "]";
+                    lan_hosts_display_.push_back(std::wstring(host.begin(), host.end()));
                 }
-                std::string line = (focus ? "> " : "  ");
-                line += std::string{labels[i]} + detail;
-                ox::put(c, {.x = margin, .y = row++}, line);
-            }
-        }
-
-        void draw_instructions(Canvas c, int row) const
-        {
-            constexpr int margin = 2;
-            ox::put(c, {.x = margin, .y = row++}, "↑/↓ or Tab to move • Enter to edit or launch");
-            ox::put(c, {.x = margin, .y = row++}, "Esc to quit • ←/→ tweak numeric fields • Backspace edits");
-        }
-
-        bool is_focus(FocusType type, std::size_t index) const
-        {
-            if (focus_items_.empty())
-            {
-                return false;
-            }
-
-            const auto &current = focus_items_[focus_index_];
-            return current.type == type && current.index == index;
-        }
-
-        void move_focus(int delta)
-        {
-            if (focus_items_.empty())
-            {
-                return;
-            }
-
-            if (editing_field_ >= 0)
-            {
-                editing_field_ = -1;
-            }
-
-            int count = static_cast<int>(focus_items_.size());
-            focus_index_ = (focus_index_ + delta) % count;
-            if (focus_index_ < 0)
-            {
-                focus_index_ += count;
-            }
-        }
-
-        void activate_current()
-        {
-            if (focus_items_.empty())
-            {
-                return;
-            }
-
-            const auto &item = focus_items_[focus_index_];
-            if (item.type == FocusType::Field)
-            {
-                editing_field_ = static_cast<int>(item.index);
-                return;
-            }
-
-            static constexpr std::array<ArmadaTuiAction, ActionCount> action_map = {
-                ARMADA_TUI_ACTION_HOST,
-                ARMADA_TUI_ACTION_SCAN,
-                ARMADA_TUI_ACTION_MANUAL_JOIN,
-                ARMADA_TUI_ACTION_QUIT};
-
-            sync_selection_from_state();
-            selection_.action = action_map[item.index];
-            int code = selection_.action == ARMADA_TUI_ACTION_QUIT ? ARMADA_TUI_STATUS_EXIT_REQUESTED : ARMADA_TUI_STATUS_OK;
-            Application::quit(code);
-        }
-
-        void adjust_numeric_current(int delta)
-        {
-            if (focus_items_.empty())
-            {
-                return;
-            }
-
-            const auto &item = focus_items_[focus_index_];
-            if (item.type != FocusType::Field)
-            {
-                return;
-            }
-
-            FieldDefinition &field = fields_[item.index];
-            if (!field.numeric_only)
-            {
-                return;
-            }
-
-            int step = field.step > 0 ? field.step : 1;
-            int value = parse_numeric(item.index);
-            value = std::clamp(value + delta * step, field.min_value, field.max_value);
-            field.value = std::to_string(value);
-        }
-
-        int parse_numeric(std::size_t index) const
-        {
-            const FieldDefinition &field = fields_[index];
-            if (field.value.empty())
-            {
-                return field.fallback;
-            }
-
-            char *end = nullptr;
-            long parsed = std::strtol(field.value.c_str(), &end, 10);
-            if (end == field.value.c_str())
-            {
-                return field.fallback;
-            }
-
-            parsed = std::clamp(parsed, static_cast<long>(field.min_value), static_cast<long>(field.max_value));
-            return static_cast<int>(parsed);
-        }
-
-        void handle_edit_key(Key key)
-        {
-            if (editing_field_ < 0)
-            {
-                return;
-            }
-
-            FieldDefinition &field = fields_[editing_field_];
-
-            auto finish_edit = [this]()
-            {
-                editing_field_ = -1;
-            };
-
-            switch (key)
-            {
-            case Key::Enter:
-                finish_edit();
-                return;
-            case Key::Tab:
-                finish_edit();
-                move_focus(+1);
-                return;
-            case Key::BackTab:
-                finish_edit();
-                move_focus(-1);
-                return;
-            case Key::Escape:
-                finish_edit();
-                return;
-            case Key::Backspace:
-                if (!field.value.empty())
+                if (selected_host_index_ < 0)
                 {
-                    field.value.pop_back();
+                    selected_host_index_ = 0;
                 }
-                return;
-            default:
-                break;
+                selected_host_index_ = std::min<int>(selected_host_index_, static_cast<int>(lan_hosts_.size() - 1));
             }
-
-            char ch = 0;
-            if (!key_to_char(key, ch))
-            {
-                return;
-            }
-            if (field.numeric_only && !std::isdigit(static_cast<unsigned char>(ch)))
-            {
-                return;
-            }
-            if (field.value.size() >= field.max_length)
-            {
-                return;
-            }
-            field.value.push_back(ch);
+            request_redraw();
         }
 
-        static bool key_to_char(Key key, char &out)
+        void connect_to_selection()
         {
-            auto code = static_cast<char32_t>(key);
-            if (code >= 32 && code <= 126)
+            std::string address;
             {
-                out = static_cast<char>(code);
-                return true;
+                std::lock_guard<std::mutex> lock(host_mutex_);
+                if (selected_host_index_ >= 0 && static_cast<std::size_t>(selected_host_index_) < lan_hosts_.size())
+                {
+                    address = lan_hosts_[selected_host_index_];
+                }
             }
-            return false;
+
+            if (address.empty())
+            {
+                append_log("Select a discovered host before joining.");
+                return;
+            }
+
+            begin_client_session(address);
         }
 
-        void sync_selection_from_state()
+        void connect_to_manual()
         {
-            copy_into_buffer(fields_[FieldPlayerName].value, selection_.player_name, sizeof(selection_.player_name));
-            copy_into_buffer(fields_[FieldManualAddress].value, selection_.manual_address, sizeof(selection_.manual_address));
-            selection_.scan_timeout_ms = parse_numeric(FieldScanTimeout);
-            selection_.scan_result_limit = parse_numeric(FieldScanLimit);
+            if (manual_ip_.empty())
+            {
+                append_log("Enter a manual IP first.");
+                return;
+            }
+            begin_client_session(manual_ip_);
+        }
+
+        void begin_client_session(const std::string &address)
+        {
+            if (player_name_.empty())
+            {
+                player_name_ = "Voyager";
+            }
+
+            {
+                std::lock_guard<std::mutex> lock(client_mutex_);
+                if (client_ && client_->connected)
+                {
+                    append_log("Already connected. Disconnect first.");
+                    return;
+                }
+            }
+
+            ClientContext *raw = client_create(player_name_.c_str());
+            if (!raw)
+            {
+                append_log("Failed to allocate client context.");
+                return;
+            }
+
+            client_.reset(raw);
+            active_address_ = address;
+
+            {
+                std::lock_guard<std::mutex> lock(client_mutex_);
+                if (client_connect(client_.get(), address.c_str()) != 0)
+                {
+                    append_log("Unable to connect to " + address + ".");
+                    client_.reset();
+                    active_address_.clear();
+                    return;
+                }
+            }
+
+            pumping_ = true;
+            pump_thread_ = std::thread(&ArmadaApp::pump_loop, this);
+            switch_view(View::Session);
+        }
+
+        void stop_client_session()
+        {
+            pumping_ = false;
+            if (pump_thread_.joinable())
+            {
+                pump_thread_.join();
+            }
+
+            std::lock_guard<std::mutex> lock(client_mutex_);
+            if (client_)
+            {
+                if (client_->connected)
+                {
+                    client_disconnect(client_.get());
+                }
+                client_.reset();
+            }
+            active_address_.clear();
+            if (view_ == View::Session)
+            {
+                switch_view(View::Join);
+            }
+        }
+
+        void pump_loop()
+        {
+            while (pumping_)
+            {
+                {
+                    std::lock_guard<std::mutex> lock(client_mutex_);
+                    if (client_)
+                    {
+                        client_pump(client_.get());
+                        if (!client_->connected)
+                        {
+                            pumping_ = false;
+                        }
+                    }
+                }
+                request_redraw();
+                std::this_thread::sleep_for(50ms);
+            }
+            request_redraw();
+        }
+
+        void send_end_turn()
+        {
+            std::lock_guard<std::mutex> lock(client_mutex_);
+            if (client_ && client_->connected)
+            {
+                client_send_action(client_.get(), USER_ACTION_END_TURN, -1, 0, 0);
+            }
+        }
+
+        void send_start_request()
+        {
+            std::lock_guard<std::mutex> lock(client_mutex_);
+            if (client_ && client_->connected)
+            {
+                client_request_match_start(client_.get());
+            }
+        }
+
+        void start_local_server()
+        {
+            if (hosting_)
+            {
+                append_log("Local server already running.");
+                return;
+            }
+
+            ServerPtr server(server_create(), &server_destroy);
+            if (!server)
+            {
+                append_log("Unable to allocate server context.");
+                return;
+            }
+
+            if (server_init(server.get(), MAX_PLAYERS) != 0)
+            {
+                append_log("Failed to initialize server context.");
+                return;
+            }
+
+            server_start(server.get());
+            if (!server->running)
+            {
+                append_log("Server failed to start. Is port " + std::to_string(DEFAULT_PORT) + " busy?");
+                return;
+            }
+
+            host_server_ = std::move(server);
+            hosting_ = true;
+            append_log("Local server started on port " + std::to_string(DEFAULT_PORT) + ". Join via 127.0.0.1.");
+            request_redraw();
+        }
+
+        void stop_local_server()
+        {
+            if (!host_server_)
+            {
+                hosting_ = false;
+                return;
+            }
+
+            server_stop(host_server_.get());
+            host_server_.reset();
+            hosting_ = false;
+            append_log("Local server stopped.");
+            request_redraw();
+        }
+
+        void toggle_local_server()
+        {
+            if (hosting_)
+            {
+                stop_local_server();
+            }
+            else
+            {
+                start_local_server();
+            }
+        }
+
+        static void log_thunk(const char *line, void *userdata)
+        {
+            if (!userdata)
+            {
+                return;
+            }
+            static_cast<ArmadaApp *>(userdata)->append_log(line ? std::string{line} : std::string{});
+        }
+
+        void append_log(const std::string &line)
+        {
+            std::lock_guard<std::mutex> lock(log_mutex_);
+            if (!line.empty())
+            {
+                logs_.push_back(line);
+            }
+            else
+            {
+                logs_.push_back(std::string{});
+            }
+            while (logs_.size() > kMaxLogs)
+            {
+                logs_.pop_front();
+            }
+            request_redraw();
         }
 
     private:
-        ArmadaTuiSelection &selection_;
-        std::array<FieldDefinition, FieldCount> fields_{};
-        std::vector<FocusItem> focus_items_{};
-        int focus_index_ = 0;
-        int editing_field_ = -1;
+        void request_redraw()
+        {
+            if (screen_ && loop_running_.load(std::memory_order_acquire))
+            {
+                screen_->PostEvent(Event::Custom);
+            }
+        }
+
+        ScreenInteractive *screen_ = nullptr;
+        View view_ = View::Menu;
+        int view_index_ = 0;
+
+        Component menu_component_;
+        Component join_component_;
+        Component session_component_;
+        Component name_input_component_;
+        Component manual_input_component_;
+        Component host_list_component_;
+
+        std::string player_name_ = "Voyager";
+        std::string manual_ip_;
+        std::vector<std::string> lan_hosts_;
+        std::vector<std::wstring> lan_hosts_display_;
+        int selected_host_index_ = 0;
+        std::mutex host_mutex_;
+
+        std::thread scan_thread_;
+        std::atomic<bool> scanning_{false};
+
+        ClientPtr client_{nullptr, &client_destroy};
+        std::mutex client_mutex_;
+        std::thread pump_thread_;
+        std::atomic<bool> pumping_{false};
+        std::string active_address_;
+        ServerPtr host_server_{nullptr, &server_destroy};
+        bool hosting_ = false;
+
+        std::mutex log_mutex_;
+        std::deque<std::string> logs_{};
+        static constexpr std::size_t kMaxLogs = 200;
+        std::atomic<bool> loop_running_{false};
     };
+}
 
-} // namespace
-
-extern "C" int armada_tui_launch(ArmadaTuiSelection *selection)
+extern "C" int armada_tui_run(void)
 {
-    if (!selection)
-    {
-        return ARMADA_TUI_STATUS_ERROR;
-    }
-
-    LauncherWidget launcher{*selection};
-
-    Application app{launcher, ox::Terminal{ox::MouseMode::Move, ox::KeyMode::Raw}};
-
-    // Explicitly set focus to the launcher widget to ensure it receives key events.
-    ox::Focus::set(launcher);
-
-    return app.run();
+    std::fprintf(stderr, "[armada] starting UI\n");
+    ArmadaApp app;
+    int result = app.run();
+    std::fprintf(stderr, "[armada] UI exited %d\n", result);
+    return result;
 }

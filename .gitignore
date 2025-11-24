@@ -529,6 +529,7 @@ moc_*.cpp
 moc_*.h
 qrc_*.cpp
 ui_*.h
+!include/client/ui_notifications.h
 *.qmlc
 *.jsc
 *build-*

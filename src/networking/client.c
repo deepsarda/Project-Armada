@@ -1,6 +1,7 @@
 #include "../../include/client/client_api.h"
 #include "../../include/networking/network.h"
 #include "../../include/client/main.h"
+#include "../../include/client/ui_notifications.h"
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -149,7 +150,7 @@ void client_request_match_start(ClientContext *ctx)
     request.sender_id = ctx->player_id;
     request.timestamp = time(NULL);
 
-    printf("[Client %s] Requesting match start...\n", ctx->player_name);
+    armada_ui_logf("[Client %s] Requesting match start...", ctx->player_name);
     net_send_event(ctx->socket_fd, &request);
 }
 
