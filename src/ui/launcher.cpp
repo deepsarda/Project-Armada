@@ -55,20 +55,15 @@ namespace
 
         int run()
         {
-            std::fprintf(stderr, "[armada] ArmadaApp::run begin\n");
             ScreenInteractive screen = ScreenInteractive::Fullscreen();
             screen_ = &screen;
-            std::fprintf(stderr, "[armada] ScreenInteractive ready\n");
 
             build_components();
-            std::fprintf(stderr, "[armada] Components built\n");
             armada_ui_set_log_sink(&ArmadaApp::log_thunk, this);
 
             auto tab_container = Container::Tab({menu_component_, join_component_, session_component_}, &view_index_);
             auto root = Renderer(tab_container, [tab_container]
                                  { return tab_container->Render() | border | size(WIDTH, GREATER_THAN, 72) | size(HEIGHT, GREATER_THAN, 24); });
-
-            std::fprintf(stderr, "[armada] Renderer ready\n");
 
             root = CatchEvent(root, [&](const Event &event)
                               {
@@ -95,20 +90,15 @@ namespace
                                   }
                                   return false; });
 
-            std::fprintf(stderr, "[armada] Entering event loop\n");
-
             loop_running_.store(true, std::memory_order_release);
             screen_->Loop(root);
             loop_running_.store(false, std::memory_order_release);
             screen_ = nullptr;
 
-            std::fprintf(stderr, "[armada] Event loop exited\n");
-
             stop_client_session();
             stop_join_scan();
             stop_local_server();
             armada_ui_set_log_sink(nullptr, nullptr);
-            std::fprintf(stderr, "[armada] Run cleanup done\n");
             return 0;
         }
 
@@ -602,9 +592,7 @@ namespace
 
 extern "C" int armada_tui_run(void)
 {
-    std::fprintf(stderr, "[armada] starting UI\n");
     ArmadaApp app;
     int result = app.run();
-    std::fprintf(stderr, "[armada] UI exited %d\n", result);
     return result;
 }
