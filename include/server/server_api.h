@@ -5,6 +5,7 @@
 
 #include "../common/events.h"
 #include "../common/game_types.h"
+#include "../networking/net_platform.h"
 
 typedef struct ServerContext
 {
@@ -12,9 +13,9 @@ typedef struct ServerContext
     int running;
     int max_players;
 
-    int server_socket;
-    int player_sockets[MAX_PLAYERS];
-    int discovery_socket;
+    net_socket_t server_socket;
+    net_socket_t player_sockets[MAX_PLAYERS];
+    net_socket_t discovery_socket;
     pthread_mutex_t state_mutex;
     pthread_t accept_thread;
     pthread_t discovery_thread;

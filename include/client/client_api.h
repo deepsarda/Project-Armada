@@ -3,6 +3,7 @@
 
 #include "../common/events.h"
 #include "../common/game_types.h"
+#include "../networking/net_platform.h"
 
 #ifdef __cplusplus
 extern "C"
@@ -17,7 +18,7 @@ extern "C"
         int host_player_id;
         int is_host;
 
-        int socket_fd;
+        net_socket_t socket_fd;
         PlayerGameState player_game_state;
         int has_state_snapshot;
     } ClientContext;

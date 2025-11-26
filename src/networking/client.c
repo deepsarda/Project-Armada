@@ -2,13 +2,10 @@
 #include "../../include/networking/network.h"
 #include "../../include/client/main.h"
 #include "../../include/client/ui_notifications.h"
-#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/socket.h>
 #include <time.h>
-#include <unistd.h>
 
 // Handles incoming game events for the client
 static void client_handle_event(ClientContext *ctx, const GameEvent *event);
@@ -58,7 +55,7 @@ int client_init(ClientContext *ctx, const char *player_name)
     ctx->connected = 0;
     ctx->host_player_id = -1;
     ctx->is_host = 0;
-    ctx->socket_fd = -1;
+    ctx->socket_fd = NET_INVALID_SOCKET;
     ctx->has_state_snapshot = 0;
     memset(&ctx->player_game_state, 0, sizeof(PlayerGameState));
 
@@ -75,7 +72,7 @@ int client_connect(ClientContext *ctx, const char *server_addr)
     client_main_on_connecting(ctx, addr, DEFAULT_PORT);
 
     ctx->socket_fd = net_connect_to_server(addr, DEFAULT_PORT);
-    if (ctx->socket_fd < 0)
+    if (ctx->socket_fd == NET_INVALID_SOCKET)
     {
         client_main_on_connection_failed(ctx, addr, DEFAULT_PORT);
         return -1;
@@ -110,10 +107,10 @@ void client_disconnect(ClientContext *ctx)
     ctx->connected = 0;
     ctx->is_host = 0;
     ctx->host_player_id = -1;
-    if (ctx->socket_fd >= 0)
+    if (ctx->socket_fd != NET_INVALID_SOCKET)
     {
         net_close_socket(ctx->socket_fd);
-        ctx->socket_fd = -1;
+        ctx->socket_fd = NET_INVALID_SOCKET;
     }
 }
 
@@ -161,7 +158,7 @@ void client_pump(ClientContext *ctx)
         return;
 
     GameEvent event;
-    int result = net_receive_event_flags(ctx->socket_fd, &event, MSG_DONTWAIT);
+    int result = net_receive_event_flags(ctx->socket_fd, &event, NET_MSG_DONTWAIT);
 
     if (result == 0)
     {
@@ -172,10 +169,10 @@ void client_pump(ClientContext *ctx)
     {
         ctx->connected = 0;
         client_main_on_disconnected(ctx);
-        if (ctx->socket_fd >= 0)
+        if (ctx->socket_fd != NET_INVALID_SOCKET)
         {
             net_close_socket(ctx->socket_fd);
-            ctx->socket_fd = -1;
+            ctx->socket_fd = NET_INVALID_SOCKET;
         }
         return;
     }

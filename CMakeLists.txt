@@ -40,6 +40,7 @@ target_link_libraries(armada PRIVATE
     ftxui::dom
     ftxui::screen
     pthread
+    $<$<PLATFORM_ID:Windows>:ws2_32>
 )
 
 include(GNUInstallDirs)

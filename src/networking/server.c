@@ -3,22 +3,17 @@
 #include "../../include/server/server_api.h"
 #include "../../include/server/main.h"
 #include "../../include/networking/network.h"
-#include <arpa/inet.h>
-#include <errno.h>
-#include <netinet/in.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/socket.h>
 #include <time.h>
-#include <unistd.h>
 
 // Arguments passed to each client thread
 typedef struct
 {
     ServerContext *ctx;
-    int socket_fd;
+    net_socket_t socket_fd;
 } ClientThreadArgs;
 
 // Thread entry points
@@ -27,10 +22,10 @@ static void *server_client_thread(void *arg);
 
 // Event handlers
 static void server_handle_event(ServerContext *ctx, const GameEvent *event);
-static void server_handle_player_join(ServerContext *ctx, int sender_socket, const EventPayload_PlayerJoin *payload);
+static void server_handle_player_join(ServerContext *ctx, net_socket_t sender_socket, const EventPayload_PlayerJoin *payload);
 static void server_handle_user_action(ServerContext *ctx, const EventPayload_UserAction *payload);
 static void server_handle_match_start_request(ServerContext *ctx, int requester_id);
-static void server_handle_disconnect(ServerContext *ctx, int socket_fd);
+static void server_handle_disconnect(ServerContext *ctx, net_socket_t socket_fd);
 
 // Event sending helpers
 static void server_broadcast_event(ServerContext *ctx, const GameEvent *event);
@@ -40,7 +35,7 @@ static void server_broadcast_current_turn(ServerContext *ctx, int is_match_start
 // Player management helpers
 static PlayerState *server_get_player(ServerContext *ctx, int player_id);
 static int server_find_open_slot(ServerContext *ctx);
-static int server_find_player_by_socket(ServerContext *ctx, int socket_fd);
+static int server_find_player_by_socket(ServerContext *ctx, net_socket_t socket_fd);
 static void server_reset_player(PlayerState *player, int player_id, const char *name);
 static void server_refresh_player_count(ServerContext *ctx);
 
@@ -72,8 +67,8 @@ ServerContext *server_create()
 
     memset(ctx, 0, sizeof(ServerContext));
     ctx->max_players = MAX_PLAYERS;
-    ctx->server_socket = -1;
-    ctx->discovery_socket = -1;
+    ctx->server_socket = NET_INVALID_SOCKET;
+    ctx->discovery_socket = NET_INVALID_SOCKET;
     ctx->running = 0;
     ctx->accept_thread = 0;
     ctx->discovery_thread = 0;
@@ -82,7 +77,7 @@ ServerContext *server_create()
     ctx->game_state.winner_id = -1;
     for (int i = 0; i < MAX_PLAYERS; ++i)
     {
-        ctx->player_sockets[i] = -1;
+        ctx->player_sockets[i] = NET_INVALID_SOCKET;
     }
     pthread_mutex_init(&ctx->state_mutex, NULL);
     return ctx;
@@ -133,7 +128,7 @@ void server_start(ServerContext *ctx)
 
     server_main_on_starting(ctx, DEFAULT_PORT);
     ctx->server_socket = net_create_server_socket(DEFAULT_PORT);
-    if (ctx->server_socket < 0)
+    if (ctx->server_socket == NET_INVALID_SOCKET)
     {
         server_main_on_start_failed(ctx, "Failed to create socket");
         return;
@@ -151,7 +146,7 @@ void server_start(ServerContext *ctx)
         server_main_on_accept_thread_failed(ctx, "Failed to create accept thread");
         ctx->running = 0;
         net_close_socket(ctx->server_socket);
-        ctx->server_socket = -1;
+        ctx->server_socket = NET_INVALID_SOCKET;
         server_stop_discovery_service(ctx);
     }
     else
@@ -171,10 +166,10 @@ void server_stop(ServerContext *ctx)
 
     server_stop_discovery_service(ctx);
 
-    if (ctx->server_socket >= 0)
+    if (ctx->server_socket != NET_INVALID_SOCKET)
     {
         net_close_socket(ctx->server_socket);
-        ctx->server_socket = -1;
+        ctx->server_socket = NET_INVALID_SOCKET;
     }
 
     if (ctx->accept_thread)
@@ -186,10 +181,10 @@ void server_stop(ServerContext *ctx)
     pthread_mutex_lock(&ctx->state_mutex);
     for (int i = 0; i < MAX_PLAYERS; ++i)
     {
-        if (ctx->player_sockets[i] != -1)
+        if (ctx->player_sockets[i] != NET_INVALID_SOCKET)
         {
             net_close_socket(ctx->player_sockets[i]);
-            ctx->player_sockets[i] = -1;
+            ctx->player_sockets[i] = NET_INVALID_SOCKET;
             ctx->game_state.players[i].is_active = 0;
             ctx->game_state.players[i].is_connected = 0;
         }
@@ -209,20 +204,22 @@ static int server_start_discovery_service(ServerContext *ctx)
     if (!ctx)
         return -1;
 
-    if (ctx->discovery_socket >= 0)
+    if (ctx->discovery_socket != NET_INVALID_SOCKET)
         return 0;
 
     ctx->discovery_socket = socket(AF_INET, SOCK_DGRAM, 0);
-    if (ctx->discovery_socket < 0)
+    if (ctx->discovery_socket == NET_INVALID_SOCKET)
     {
+        net_log_socket_error("socket");
         return -1;
     }
 
     int reuse = 1;
-    if (setsockopt(ctx->discovery_socket, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse)) < 0)
+    if (setsockopt(ctx->discovery_socket, SOL_SOCKET, SO_REUSEADDR, (const char *)&reuse, sizeof(reuse)) == NET_SOCKET_ERROR)
     {
-        close(ctx->discovery_socket);
-        ctx->discovery_socket = -1;
+        net_log_socket_error("setsockopt");
+        net_close_socket(ctx->discovery_socket);
+        ctx->discovery_socket = NET_INVALID_SOCKET;
         return -1;
     }
 
@@ -232,17 +229,19 @@ static int server_start_discovery_service(ServerContext *ctx)
     addr.sin_addr.s_addr = htonl(INADDR_ANY);
     addr.sin_port = htons(DEFAULT_PORT);
 
-    if (bind(ctx->discovery_socket, (struct sockaddr *)&addr, sizeof(addr)) < 0)
+    if (bind(ctx->discovery_socket, (struct sockaddr *)&addr, sizeof(addr)) == NET_SOCKET_ERROR)
     {
-        close(ctx->discovery_socket);
-        ctx->discovery_socket = -1;
+        net_log_socket_error("bind");
+        net_close_socket(ctx->discovery_socket);
+        ctx->discovery_socket = NET_INVALID_SOCKET;
         return -1;
     }
 
     if (pthread_create(&ctx->discovery_thread, NULL, server_discovery_thread, ctx) != 0)
     {
-        close(ctx->discovery_socket);
-        ctx->discovery_socket = -1;
+        fprintf(stderr, "[Server] Failed to start discovery thread.\n");
+        net_close_socket(ctx->discovery_socket);
+        ctx->discovery_socket = NET_INVALID_SOCKET;
         ctx->discovery_thread = 0;
         return -1;
     }
@@ -255,10 +254,10 @@ static void server_stop_discovery_service(ServerContext *ctx)
     if (!ctx)
         return;
 
-    if (ctx->discovery_socket >= 0)
+    if (ctx->discovery_socket != NET_INVALID_SOCKET)
     {
-        close(ctx->discovery_socket);
-        ctx->discovery_socket = -1;
+        net_close_socket(ctx->discovery_socket);
+        ctx->discovery_socket = NET_INVALID_SOCKET;
     }
 
     if (ctx->discovery_thread)
@@ -283,11 +282,12 @@ static void *server_discovery_thread(void *arg)
             {
                 break;
             }
-            if (errno == EINTR)
+            int last_error = NET_ERRNO();
+            if (last_error == NET_EINTR)
             {
                 continue;
             }
-            if (errno == EBADF)
+            if (last_error == NET_EBADF)
             {
                 break;
             }
@@ -318,17 +318,18 @@ static void *server_accept_thread(void *arg)
 {
     ServerContext *ctx = (ServerContext *)arg;
     struct sockaddr_in address;
-    int addrlen = sizeof(address);
+    socklen_t addrlen = sizeof(address);
 
     server_main_on_accept_thread_started(ctx);
 
     while (ctx->running)
     {
-        int new_socket = accept(ctx->server_socket, (struct sockaddr *)&address, (socklen_t *)&addrlen);
-        if (new_socket < 0)
+        addrlen = sizeof(address);
+        net_socket_t new_socket = accept(ctx->server_socket, (struct sockaddr *)&address, &addrlen);
+        if (new_socket == NET_INVALID_SOCKET)
         {
             if (ctx->running)
-                perror("accept");
+                net_log_socket_error("accept");
             continue;
         }
 
@@ -344,7 +345,7 @@ static void *server_accept_thread(void *arg)
         {
             server_main_on_accept_thread_failed(ctx, "Failed to create client thread");
             free(args);
-            close(new_socket);
+            net_close_socket(new_socket);
         }
         else
         {
@@ -359,7 +360,7 @@ static void *server_client_thread(void *arg)
 {
     ClientThreadArgs *args = (ClientThreadArgs *)arg;
     ServerContext *ctx = args->ctx;
-    int sock = args->socket_fd;
+    net_socket_t sock = args->socket_fd;
     free(args);
 
     GameEvent event;
@@ -372,10 +373,10 @@ static void *server_client_thread(void *arg)
             break;
         }
 
-        // If it's a join request, we need to pass the socket info
         if (event.type == EVENT_PLAYER_JOIN_REQUEST)
         {
-            event.sender_id = sock; // HACK: pass socket as sender_id for join
+            server_handle_player_join(ctx, sock, &event.data.join_req);
+            continue;
         }
 
         server_handle_event(ctx, &event);
@@ -398,9 +399,6 @@ static void server_handle_event(ServerContext *ctx, const GameEvent *event)
 
     switch (event->type)
     {
-    case EVENT_PLAYER_JOIN_REQUEST:
-        server_handle_player_join(ctx, event->sender_id, &event->data.join_req);
-        break;
     case EVENT_USER_ACTION:
         server_handle_user_action(ctx, &event->data.action);
         break;
@@ -414,9 +412,9 @@ static void server_handle_event(ServerContext *ctx, const GameEvent *event)
 }
 
 // Handle player join requests
-static void server_handle_player_join(ServerContext *ctx, int sender_socket, const EventPayload_PlayerJoin *payload)
+static void server_handle_player_join(ServerContext *ctx, net_socket_t sender_socket, const EventPayload_PlayerJoin *payload)
 {
-    if (!payload)
+    if (!payload || sender_socket == NET_INVALID_SOCKET)
         return;
 
     GameEvent ack_event;
@@ -671,7 +669,7 @@ static void server_handle_match_start_request(ServerContext *ctx, int requester_
 }
 
 // Handle player disconnects
-static void server_handle_disconnect(ServerContext *ctx, int socket_fd)
+static void server_handle_disconnect(ServerContext *ctx, net_socket_t socket_fd)
 {
     int host_changed = 0;
     int new_host_id = -1;
@@ -691,7 +689,7 @@ static void server_handle_disconnect(ServerContext *ctx, int socket_fd)
     name_copy[sizeof(name_copy) - 1] = '\0';
     player->is_active = 0;
     player->is_connected = 0;
-    ctx->player_sockets[player_id] = -1;
+    ctx->player_sockets[player_id] = NET_INVALID_SOCKET;
     server_refresh_player_count(ctx);
 
     int was_current = (ctx->game_state.turn.current_player_id == player_id);
@@ -737,8 +735,8 @@ static void server_broadcast_event(ServerContext *ctx, const GameEvent *event)
     pthread_mutex_lock(&ctx->state_mutex);
     for (int i = 0; i < MAX_PLAYERS; ++i)
     {
-        int sock = ctx->player_sockets[i];
-        if (sock != -1)
+        net_socket_t sock = ctx->player_sockets[i];
+        if (sock != NET_INVALID_SOCKET)
         {
             net_send_event(sock, event);
         }
@@ -752,8 +750,8 @@ static void server_send_event_to(ServerContext *ctx, int player_id, const GameEv
     pthread_mutex_lock(&ctx->state_mutex);
     if (player_id >= 0 && player_id < MAX_PLAYERS)
     {
-        int sock = ctx->player_sockets[player_id];
-        if (sock != -1)
+        net_socket_t sock = ctx->player_sockets[player_id];
+        if (sock != NET_INVALID_SOCKET)
         {
             net_send_event(sock, event);
         }
@@ -876,7 +874,7 @@ static int server_find_open_slot(ServerContext *ctx)
 }
 
 // Find player ID by socket FD
-static int server_find_player_by_socket(ServerContext *ctx, int socket_fd)
+static int server_find_player_by_socket(ServerContext *ctx, net_socket_t socket_fd)
 {
     for (int i = 0; i < MAX_PLAYERS; ++i)
     {

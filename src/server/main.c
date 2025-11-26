@@ -50,16 +50,16 @@ void server_main_on_stopping(ServerContext *ctx)
     printf("[ServerMain] Stopping server...\n");
 }
 
-void server_main_on_client_connected(ServerContext *ctx, int socket_fd)
+void server_main_on_client_connected(ServerContext *ctx, net_socket_t socket_fd)
 {
     (void)ctx;
-    printf("[ServerMain] Client connected on socket %d.\n", socket_fd);
+    printf("[ServerMain] Client connected on socket %llu.\n", (unsigned long long)socket_fd);
 }
 
-void server_main_on_client_disconnected(ServerContext *ctx, int socket_fd)
+void server_main_on_client_disconnected(ServerContext *ctx, net_socket_t socket_fd)
 {
     (void)ctx;
-    printf("[ServerMain] Client disconnected on socket %d.\n", socket_fd);
+    printf("[ServerMain] Client disconnected on socket %llu.\n", (unsigned long long)socket_fd);
 }
 
 void server_main_on_unhandled_event(ServerContext *ctx, EventType type)

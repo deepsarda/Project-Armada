@@ -11,8 +11,8 @@ void server_main_on_started(ServerContext *ctx, int port);
 void server_main_on_accept_thread_started(ServerContext *ctx);
 void server_main_on_accept_thread_failed(ServerContext *ctx, const char *message);
 void server_main_on_stopping(ServerContext *ctx);
-void server_main_on_client_connected(ServerContext *ctx, int socket_fd);
-void server_main_on_client_disconnected(ServerContext *ctx, int socket_fd);
+void server_main_on_client_connected(ServerContext *ctx, net_socket_t socket_fd);
+void server_main_on_client_disconnected(ServerContext *ctx, net_socket_t socket_fd);
 void server_main_on_unhandled_event(ServerContext *ctx, EventType type);
 void server_main_on_unknown_action(ServerContext *ctx, UserActionType action, int player_id);
 
