@@ -58,12 +58,20 @@ typedef struct
     int reason_code;
 } EventPayload_PlayerLifecycle;
 
+// Bitmask for valid actions
+#define VALID_ACTION_END_TURN (1 << 0)
+#define VALID_ACTION_ATTACK_PLANET (1 << 1)
+#define VALID_ACTION_REPAIR_PLANET (1 << 2)
+#define VALID_ACTION_UPGRADE_PLANET (1 << 3)
+#define VALID_ACTION_UPGRADE_SHIP (1 << 4)
+
 typedef struct
 {
     int current_player_id;
     int next_player_id;
     int turn_number;
     int is_match_start;
+    int valid_actions; // Bitmask of valid actions for the receiving player
     EventPayload_UserAction last_action;
     PlayerGameState game;
 } EventPayload_TurnInfo;

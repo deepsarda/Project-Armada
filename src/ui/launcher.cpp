@@ -13,6 +13,7 @@
 #include <chrono>
 #include <deque>
 #include <cstdio>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <sstream>
@@ -26,17 +27,23 @@ namespace
     using ftxui::bold;
     using ftxui::border;
     using ftxui::Button;
+    using ftxui::ButtonOption;
     using ftxui::CatchEvent;
+    using ftxui::color;
+    using ftxui::Color;
     using ftxui::Component;
     namespace Container = ftxui::Container;
     using ftxui::dim;
     using ftxui::Element;
     using ftxui::Event;
     using ftxui::flex;
+    using ftxui::flex_shrink;
     using ftxui::GREATER_THAN;
     using ftxui::hbox;
     using ftxui::HEIGHT;
     using ftxui::Input;
+    using ftxui::Maybe;
+    using ftxui::Menu;
     using ftxui::paragraph;
     using ftxui::Radiobox;
     using ftxui::Renderer;
@@ -48,6 +55,38 @@ namespace
     using ftxui::WIDTH;
     using ftxui::window;
 
+    // HELPER FUNCTIONS
+
+    // Create a styled button that appears disabled when condition is false
+    Component StyledButton(const std::string &label, std::function<void()> on_click, std::function<bool()> is_enabled)
+    {
+        auto option = ButtonOption::Simple();
+        return Button(
+                   label,
+                   [on_click, is_enabled]()
+                   {
+                       if (is_enabled())
+                       {
+                           on_click();
+                       }
+                   },
+                   option) |
+               Renderer([is_enabled](Element inner)
+                        {
+                            if (!is_enabled())
+                            {
+                                return inner | dim | color(Color::GrayDark);
+                            }
+                            return inner; });
+    }
+
+    // Simple button without disable logic
+    Component SimpleButton(const std::string &label, std::function<void()> on_click)
+    {
+        return Button(label, on_click, ButtonOption::Simple());
+    }
+
+    // MAIN APP CLASS
     class ArmadaApp
     {
     public:
@@ -61,34 +100,41 @@ namespace
             build_components();
             armada_ui_set_log_sink(&ArmadaApp::log_thunk, this);
 
-            auto tab_container = Container::Tab({menu_component_, join_component_, session_component_}, &view_index_);
-            auto root = Renderer(tab_container, [tab_container]
-                                 { return tab_container->Render() | border | size(WIDTH, GREATER_THAN, 72) | size(HEIGHT, GREATER_THAN, 24); });
+            // Main tabs: Host and Play
+            std::vector<std::string> tab_names = {"Host", "Play"};
+            auto tab_menu = Menu(&tab_names, &main_tab_index_);
+
+            auto tab_content = Container::Tab({host_component_, play_component_}, &main_tab_index_);
+
+            auto main_container = Container::Horizontal({tab_menu, tab_content});
+
+            auto root = Renderer(main_container, [&]
+                                 {
+                auto tab_element = tab_menu->Render() | border;
+                auto content_element = tab_content->Render() | flex | border;
+                return hbox({
+                    tab_element | size(WIDTH, ftxui::EQUAL, 12),
+                    content_element,
+                }) | size(WIDTH, GREATER_THAN, 80) | size(HEIGHT, GREATER_THAN, 24); });
 
             root = CatchEvent(root, [&](const Event &event)
                               {
-                                  if (event == Event::Escape && view_ == View::Session)
-                                  {
-                                      stop_client_session();
-                                      return true;
-                                  }
-                                  if (event == Event::Escape && view_ == View::Join)
-                                  {
-                                      switch_view(View::Menu);
-                                      return true;
-                                  }
-                                  if (event == Event::Character('q'))
-                                  {
-                                      stop_client_session();
-                                      stop_join_scan();
-                                      stop_local_server();
-                                      if (screen_)
-                                      {
-                                          screen_->Exit();
-                                      }
-                                      return true;
-                                  }
-                                  return false; });
+                if (event == Event::Character('q'))
+                {
+                    stop_client_session();
+                    stop_join_scan();
+                    stop_local_server();
+                    if (screen_) screen_->Exit();
+                    return true;
+                }
+                if (event == Event::Escape && play_view_ == PlayView::Session)
+                {
+                    stop_client_session();
+                    return true;
+                }
+                return false; });
+
+            start_join_scan();
 
             loop_running_.store(true, std::memory_order_release);
             screen_->Loop(root);
@@ -103,161 +149,333 @@ namespace
         }
 
     private:
-        enum class View
+        enum class PlayView
         {
-            Menu = 0,
-            Join = 1,
-            Session = 2
+            JoinServer = 0,
+            Session = 1,
+        };
+
+        enum class DialogMode
+        {
+            None = 0,
+            Attack,
         };
 
         using ClientPtr = std::unique_ptr<ClientContext, decltype(&client_destroy)>;
         using ServerPtr = std::unique_ptr<ServerContext, decltype(&server_destroy)>;
 
+        // COMPONENT BUILDERS
+
         void build_components()
         {
-            build_menu();
-            build_join();
-            build_session();
+            build_host_tab();
+            build_play_tab();
             refresh_lan_hosts({});
         }
 
-        void build_menu()
-        {
-            auto host_button = Button("Host server", [&]
-                                      { toggle_local_server(); });
-            auto join_button = Button("Join server", [&]
-                                      { switch_view(View::Join); });
-            auto quit_button = Button("Quit", [&]
-                                      {
-                                          stop_client_session();
-                                          stop_join_scan();
-                                          stop_local_server();
-                                          if (screen_)
-                                          {
-                                              screen_->Exit();
-                                          } });
+        // HOST TAB
 
-            auto buttons = Container::Vertical({host_button, join_button, quit_button});
-            menu_component_ = Renderer(buttons, [this, buttons]
-                                       {
-                                           auto status = hosting_ ? text("Local server: running on port " + std::to_string(DEFAULT_PORT)) | bold
-                                                                  : text("Local server: idle") | dim;
-                                           return window(text("Project Armada Launcher"),
-                                                         vbox({
-                                                             text("Choose an option to get started."),
-                                                             separator(),
-                                                             status,
-                                                             separator(),
-                                                             buttons->Render(),
-                                                         }) | size(WIDTH, GREATER_THAN, 48)); });
+        Component build_server_controls()
+        {
+            auto start_btn = SimpleButton("Start Server", [&]
+                                          { start_local_server(); });
+            auto stop_btn = SimpleButton("Stop Server", [&]
+                                         { stop_local_server(); });
+
+            // Use Maybe to show/hide buttons based on server state
+            auto start_visible = start_btn | Maybe([&]
+                                                   { return !hosting_; });
+            auto stop_visible = stop_btn | Maybe([&]
+                                                 { return hosting_; });
+
+            return Container::Horizontal({start_visible, stop_visible});
         }
 
-        void build_join()
+        Element render_server_stats()
+        {
+            std::vector<Element> stats_elements;
+            stats_elements.push_back(text("Server Statistics") | bold);
+            stats_elements.push_back(separator());
+
+            if (hosting_ && host_server_)
+            {
+                pthread_mutex_lock(&host_server_->state_mutex);
+                GameState &gs = host_server_->game_state;
+
+                stats_elements.push_back(text("Players: " + std::to_string(gs.player_count) + "/" + std::to_string(host_server_->max_players)));
+                stats_elements.push_back(text("Match Started: " + std::string(gs.match_started ? "Yes" : "No")));
+
+                if (gs.match_started)
+                {
+                    stats_elements.push_back(text("Turn: " + std::to_string(gs.turn.turn_number)));
+                    if (gs.turn.current_player_id >= 0 && gs.turn.current_player_id < MAX_PLAYERS)
+                    {
+                        stats_elements.push_back(text("Current Player: " + std::string(gs.players[gs.turn.current_player_id].name)));
+                    }
+                }
+
+                stats_elements.push_back(separator());
+                stats_elements.push_back(text("Player List:") | bold);
+
+                for (int i = 0; i < MAX_PLAYERS; ++i)
+                {
+                    if (gs.players[i].is_active)
+                    {
+                        std::string status_str;
+                        if (gs.host_player_id == i)
+                            status_str = " [HOST]";
+                        if (gs.match_started && gs.turn.current_player_id == i)
+                            status_str += " <- Turn";
+                        std::string player_line = "  " + std::to_string(i) + ": " + gs.players[i].name + status_str;
+                        if (gs.match_started)
+                        {
+                            player_line += " | Stars: " + std::to_string(gs.players[i].stars);
+                            player_line += " | HP: " + std::to_string(gs.players[i].planet.current_health) + "/" + std::to_string(gs.players[i].planet.max_health);
+                        }
+                        stats_elements.push_back(text(player_line));
+                    }
+                }
+
+                pthread_mutex_unlock(&host_server_->state_mutex);
+            }
+            else
+            {
+                stats_elements.push_back(text("(Server not running)") | dim);
+            }
+
+            return vbox(stats_elements) | flex;
+        }
+
+        Element render_server_logs()
+        {
+            std::string server_log_text;
+            {
+                std::lock_guard<std::mutex> lock(server_log_mutex_);
+                std::ostringstream oss;
+                for (const auto &line : server_logs_)
+                    oss << line << '\n';
+                server_log_text = oss.str();
+            }
+            return paragraph(server_log_text.empty() ? std::string{"(No logs yet)"} : server_log_text) | flex;
+        }
+
+        void build_host_tab()
+        {
+            auto server_controls = build_server_controls();
+
+            host_component_ = Renderer(server_controls, [this, server_controls]
+                                       {
+                Element server_status;
+                if (hosting_)
+                    server_status = text("Server: RUNNING on port " + std::to_string(DEFAULT_PORT)) | bold | color(Color::Green);
+                else
+                    server_status = text("Server: STOPPED") | dim;
+
+                auto stats_panel = window(text("Stats"), render_server_stats());
+                auto logs_panel = window(text("Server Logs"), render_server_logs());
+
+                return vbox({
+                    text("HOST SERVER") | bold,
+                    separator(),
+                    server_status,
+                    separator(),
+                    hbox({
+                        stats_panel | size(WIDTH, GREATER_THAN, 40) | flex_shrink,
+                        logs_panel | flex,
+                    }) | flex,
+                    separator(),
+                    server_controls->Render(),
+                }) | flex; });
+        }
+
+        // PLAY TAB
+
+        void build_play_tab()
+        {
+            build_join_view();
+            build_session_view();
+
+            auto play_views = Container::Tab({join_component_, session_component_}, &play_view_index_);
+            play_component_ = Renderer(play_views, [play_views]
+                                       { return play_views->Render() | flex; });
+        }
+
+        // JOIN VIEW
+
+        Component build_join_controls()
+        {
+            auto connect_selection = SimpleButton("Join Selection", [&]
+                                                  { connect_to_selection(); });
+            auto connect_manual = SimpleButton("Join Manual IP", [&]
+                                               { connect_to_manual(); });
+            auto search_now = SimpleButton("Search Now", [&]
+                                           { trigger_scan_now(); });
+
+            return Container::Horizontal({connect_selection, connect_manual, search_now});
+        }
+
+        void build_join_view()
         {
             name_input_component_ = Input(&player_name_, "Voyager");
             manual_input_component_ = Input(&manual_ip_, "192.168.0.42");
             host_list_component_ = Radiobox(&lan_hosts_display_, &selected_host_index_);
 
-            auto connect_discovered = Button("Join selection", [&]
-                                             { connect_to_selection(); });
-            auto connect_manual = Button("Join manual IP", [&]
-                                         { connect_to_manual(); });
-            auto back_button = Button("Back", [&]
-                                      { switch_view(View::Menu); });
+            auto join_controls = build_join_controls();
+            auto join_stack = Container::Vertical({name_input_component_, manual_input_component_, host_list_component_, join_controls});
 
-            auto buttons = Container::Horizontal({connect_discovered, connect_manual, back_button});
-
-            auto join_stack = Container::Vertical({name_input_component_, manual_input_component_, host_list_component_, buttons});
-            join_component_ = Renderer(join_stack, [this, buttons]
-                                       { return window(text("Join a server"),
-                                                       vbox({
-                                                           text("Set your pilot name, pick a LAN host, or enter a manual IP."),
-                                                           separator(),
-                                                           hbox({text("Player name:") | size(WIDTH, GREATER_THAN, 16), name_input_component_->Render()}) | size(WIDTH, GREATER_THAN, 40),
-                                                           hbox({text("Manual IP:"), manual_input_component_->Render()}),
-                                                           separator(),
-                                                           text("Discovered hosts:"),
-                                                           host_list_component_->Render() | flex,
-                                                           separator(),
-                                                           hbox({text("Scanning every 30s"), separator(), text("Press JOIN to start playing") | dim}),
-                                                           buttons->Render(),
-                                                       }) | flex); });
+            join_component_ = Renderer(join_stack, [this, join_controls]
+                                       { return vbox({
+                                                    text("JOIN SERVER") | bold,
+                                                    separator(),
+                                                    hbox({text("Player Name: ") | size(WIDTH, ftxui::EQUAL, 14), name_input_component_->Render() | flex}),
+                                                    hbox({text("Manual IP: ") | size(WIDTH, ftxui::EQUAL, 14), manual_input_component_->Render() | flex}),
+                                                    separator(),
+                                                    text("Discovered LAN Servers:") | bold,
+                                                    host_list_component_->Render() | flex | border,
+                                                    text("Auto-scanning every 10s. Press 'Search Now' to refresh.") | dim,
+                                                    separator(),
+                                                    join_controls->Render(),
+                                                }) |
+                                                flex; });
         }
 
-        void build_session()
-        {
-            auto end_turn = Button("End turn", [&]
-                                   { send_end_turn(); });
-            auto start_match = Button("Start match", [&]
-                                      { send_start_request(); });
-            auto disconnect = Button("Disconnect", [&]
-                                     { stop_client_session(); });
+        // SESSION VIEW
 
-            auto controls = Container::Horizontal({end_turn, start_match, disconnect});
-            session_component_ = Renderer(controls, [this, controls]
-                                          { return window(text("Client session"), render_session(controls)); });
+        Component build_prematch_controls()
+        {
+            auto disconnect_btn = SimpleButton("Disconnect", [&]
+                                               { stop_client_session(); });
+
+            auto start_match_btn = StyledButton(
+                "Start Match",
+                [&]
+                { send_start_request(); },
+                [&]
+                {
+                    std::lock_guard<std::mutex> lock(client_mutex_);
+                    return client_ && client_->is_host;
+                });
+
+            return Container::Horizontal({disconnect_btn, start_match_btn});
         }
 
-        Element render_session(const Component &controls)
+        Component build_game_action_buttons()
         {
-            std::string server = active_address_.empty() ? "<none>" : active_address_;
-            std::string status;
-            {
-                std::lock_guard<std::mutex> lock(client_mutex_);
-                if (client_ && client_->connected)
-                {
-                    status = "Connected";
-                }
-                else
-                {
-                    status = "Disconnected";
-                }
-            }
+            // TODO: Implement game action buttons
+            return Container::Horizontal({});
+        }
 
+        Component build_attack_dialog()
+        {
+            // TODO: Implement attack dialog
+            return Renderer([]
+                            { return vbox(); });
+        }
+
+        Element render_other_players()
+        {
+            // TODO: Implement detailed player list
+            return vbox();
+        }
+
+        Element render_self_info()
+        {
+            // TODO: Implement self info display
+            return vbox();
+        }
+
+        Element render_game_logs()
+        {
             std::string log_text;
             {
                 std::lock_guard<std::mutex> lock(log_mutex_);
                 std::ostringstream oss;
                 for (const auto &line : logs_)
-                {
                     oss << line << '\n';
-                }
                 log_text = oss.str();
             }
-
-            return vbox({
-                       text("Player: " + (player_name_.empty() ? std::string{"(unnamed)"} : player_name_)),
-                       text("Server: " + server),
-                       text("Status: " + status),
-                       separator(),
-                       paragraph(log_text.empty() ? std::string{"Waiting for events..."} : log_text) | flex,
-                       separator(),
-                       controls->Render(),
-                   }) |
-                   flex;
+            return paragraph(log_text.empty() ? std::string{"Waiting for events..."} : log_text) | flex;
         }
 
-        void switch_view(View next)
+        Element render_turn_indicator()
         {
-            if (view_ == next)
+            bool match_started = false;
+            bool is_my_turn = false;
+            int current_turn_id = -1;
+
             {
-                return;
+                std::lock_guard<std::mutex> lock(client_mutex_);
+                if (client_)
+                {
+                    match_started = client_->match_started;
+                    is_my_turn = (client_->current_turn_player_id == client_->player_id);
+                    current_turn_id = client_->current_turn_player_id;
+                }
             }
 
-            if (view_ == View::Join)
+            if (match_started)
             {
-                stop_join_scan();
+                if (is_my_turn)
+                    return text(">>> YOUR TURN <<<") | bold | color(Color::Green);
+                else
+                    return text("Waiting for Player " + std::to_string(current_turn_id) + "...") | dim;
             }
-
-            view_ = next;
-            view_index_ = static_cast<int>(view_);
-
-            if (view_ == View::Join)
-            {
-                start_join_scan();
-            }
-            request_redraw();
+            return text("Waiting for match to start...") | dim;
         }
+
+        void build_session_view()
+        {
+            auto prematch_controls = build_prematch_controls();
+            // TODO: Add game action buttons here
+            auto attack_dialog = build_attack_dialog();
+
+            // Use Maybe to show prematch or game controls based on match state
+            auto prematch_visible = prematch_controls | Maybe([&]
+                                                              {
+                std::lock_guard<std::mutex> lock(client_mutex_);
+                return !client_ || !client_->match_started; });
+
+            auto all_controls = Container::Vertical({prematch_visible, attack_dialog});
+
+            session_component_ = Renderer(all_controls, [this, all_controls]
+                                          {
+                std::string server = active_address_.empty() ? "<none>" : active_address_;
+                std::string status;
+                bool is_host = false;
+
+                {
+                    std::lock_guard<std::mutex> lock(client_mutex_);
+                    status = (client_ && client_->connected) ? "Connected" : "Disconnected";
+                    is_host = client_ && client_->is_host;
+                }
+
+                auto other_players_panel = window(text("Opponents"), render_other_players());
+                auto self_panel = window(text("You"), render_self_info());
+                auto logs_panel = window(text("Game Log"), render_game_logs());
+
+                std::vector<Element> info_line;
+                info_line.push_back(text("Server: " + server + " | Status: " + status));
+                if (is_host)
+                    info_line.push_back(text(" | You are HOST") | color(Color::Yellow));
+
+                return vbox({
+                    text("GAME SESSION") | bold,
+                    hbox(info_line),
+                    separator(),
+                    other_players_panel,
+                    separator(),
+                    render_turn_indicator(),
+                    separator(),
+                    hbox({
+                        self_panel | size(WIDTH, GREATER_THAN, 30),
+                        logs_panel | flex,
+                    }) | flex,
+                    separator(),
+                    all_controls->Render(),
+                }) | flex; });
+        }
+
+        // SCANNING
 
         void start_join_scan()
         {
@@ -265,36 +483,44 @@ namespace
             scanning_ = true;
             scan_thread_ = std::thread([this]()
                                        {
-                                           constexpr auto kScanSleepChunk = 100ms;
-                                           constexpr int kChunksPerRefresh = static_cast<int>(std::chrono::seconds(30) / kScanSleepChunk);
-                                           while (scanning_)
-                                           {
-                                               char hosts_raw[ARMADA_DISCOVERY_MAX_RESULTS][64] = {};
-                                               int found = net_discover_lan_servers(hosts_raw, ARMADA_DISCOVERY_MAX_RESULTS, DEFAULT_PORT, 200);
-                                               std::vector<std::string> hosts;
-                                               if (found > 0)
-                                               {
-                                                   hosts.reserve(found);
-                                                   for (int i = 0; i < found; ++i)
-                                                   {
-                                                       hosts.emplace_back(hosts_raw[i]);
-                                                   }
-                                               }
-                                               refresh_lan_hosts(hosts);
-                                               for (int tick = 0; tick < kChunksPerRefresh && scanning_; ++tick)
-                                               {
-                                                   std::this_thread::sleep_for(kScanSleepChunk);
-                                               }
-                                           } });
+                constexpr auto kScanSleepChunk = 100ms;
+                constexpr int kChunksPerRefresh = static_cast<int>(std::chrono::seconds(10) / kScanSleepChunk);
+                while (scanning_)
+                {
+                    perform_lan_scan();
+                    for (int tick = 0; tick < kChunksPerRefresh && scanning_ && !scan_now_requested_; ++tick)
+                    {
+                        std::this_thread::sleep_for(kScanSleepChunk);
+                    }
+                    scan_now_requested_ = false;
+                } });
         }
 
         void stop_join_scan()
         {
             scanning_ = false;
+            scan_now_requested_ = true; // Break out of sleep early
             if (scan_thread_.joinable())
-            {
                 scan_thread_.join();
+        }
+
+        void trigger_scan_now()
+        {
+            scan_now_requested_ = true;
+        }
+
+        void perform_lan_scan()
+        {
+            char hosts_raw[ARMADA_DISCOVERY_MAX_RESULTS][64] = {};
+            int found = net_discover_lan_servers(hosts_raw, ARMADA_DISCOVERY_MAX_RESULTS, DEFAULT_PORT, 200);
+            std::vector<std::string> hosts;
+            if (found > 0)
+            {
+                hosts.reserve(found);
+                for (int i = 0; i < found; ++i)
+                    hosts.emplace_back(hosts_raw[i]);
             }
+            refresh_lan_hosts(hosts);
         }
 
         void refresh_lan_hosts(const std::vector<std::string> &hosts)
@@ -310,17 +536,15 @@ namespace
             else
             {
                 for (const auto &host : lan_hosts_)
-                {
                     lan_hosts_display_.push_back(std::wstring(host.begin(), host.end()));
-                }
                 if (selected_host_index_ < 0)
-                {
                     selected_host_index_ = 0;
-                }
                 selected_host_index_ = std::min<int>(selected_host_index_, static_cast<int>(lan_hosts_.size() - 1));
             }
             request_redraw();
         }
+
+        // CONNECTION
 
         void connect_to_selection()
         {
@@ -328,9 +552,7 @@ namespace
             {
                 std::lock_guard<std::mutex> lock(host_mutex_);
                 if (selected_host_index_ >= 0 && static_cast<std::size_t>(selected_host_index_) < lan_hosts_.size())
-                {
                     address = lan_hosts_[selected_host_index_];
-                }
             }
 
             if (address.empty())
@@ -338,7 +560,6 @@ namespace
                 append_log("Select a discovered host before joining.");
                 return;
             }
-
             begin_client_session(address);
         }
 
@@ -355,9 +576,7 @@ namespace
         void begin_client_session(const std::string &address)
         {
             if (player_name_.empty())
-            {
                 player_name_ = "Voyager";
-            }
 
             {
                 std::lock_guard<std::mutex> lock(client_mutex_);
@@ -391,30 +610,29 @@ namespace
 
             pumping_ = true;
             pump_thread_ = std::thread(&ArmadaApp::pump_loop, this);
-            switch_view(View::Session);
+            switch_play_view(PlayView::Session);
+            stop_join_scan();
         }
 
         void stop_client_session()
         {
             pumping_ = false;
             if (pump_thread_.joinable())
-            {
                 pump_thread_.join();
-            }
 
             std::lock_guard<std::mutex> lock(client_mutex_);
             if (client_)
             {
                 if (client_->connected)
-                {
                     client_disconnect(client_.get());
-                }
                 client_.reset();
             }
             active_address_.clear();
-            if (view_ == View::Session)
+            dialog_mode_ = DialogMode::None;
+            if (play_view_ == PlayView::Session)
             {
-                switch_view(View::Join);
+                switch_play_view(PlayView::JoinServer);
+                start_join_scan();
             }
         }
 
@@ -428,9 +646,7 @@ namespace
                     {
                         client_pump(client_.get());
                         if (!client_->connected)
-                        {
                             pumping_ = false;
-                        }
                     }
                 }
                 request_redraw();
@@ -439,55 +655,125 @@ namespace
             request_redraw();
         }
 
-        void send_end_turn()
+        void switch_play_view(PlayView view)
         {
-            std::lock_guard<std::mutex> lock(client_mutex_);
-            if (client_ && client_->connected)
-            {
-                client_send_action(client_.get(), USER_ACTION_END_TURN, -1, 0, 0);
-            }
+            play_view_ = view;
+            play_view_index_ = static_cast<int>(view);
+            request_redraw();
         }
+
+        // GAME ACTIONS
 
         void send_start_request()
         {
             std::lock_guard<std::mutex> lock(client_mutex_);
-            if (client_ && client_->connected)
-            {
+            if (client_ && client_->connected && client_->is_host)
                 client_request_match_start(client_.get());
-            }
         }
+
+        void show_attack_dialog()
+        {
+            std::lock_guard<std::mutex> lock(client_mutex_);
+            if (!client_ || !client_->connected || !(client_->valid_actions & VALID_ACTION_ATTACK_PLANET))
+                return;
+
+            target_players_display_.clear();
+            target_player_ids_.clear();
+            for (int i = 0; i < MAX_PLAYERS; ++i)
+            {
+                const PlayerPublicInfo &info = client_->player_game_state.entries[i];
+                if (info.player_id != client_->player_id && info.planet_level > 0)
+                {
+                    target_player_ids_.push_back(i);
+                    target_players_display_.push_back(L"Player " + std::to_wstring(i));
+                }
+            }
+
+            if (target_players_display_.empty())
+                return;
+
+            selected_target_index_ = 0;
+            dialog_mode_ = DialogMode::Attack;
+            request_redraw();
+        }
+
+        void confirm_attack()
+        {
+            if (dialog_mode_ != DialogMode::Attack)
+                return;
+
+            std::lock_guard<std::mutex> lock(client_mutex_);
+            if (!client_ || !client_->connected || !(client_->valid_actions & VALID_ACTION_ATTACK_PLANET))
+            {
+                dialog_mode_ = DialogMode::None;
+                return;
+            }
+
+            if (selected_target_index_ >= 0 && static_cast<std::size_t>(selected_target_index_) < target_player_ids_.size())
+            {
+                int target_id = target_player_ids_[selected_target_index_];
+                int damage = client_->player_game_state.self.ship.base_damage;
+                client_send_action(client_.get(), USER_ACTION_ATTACK_PLANET, target_id, damage, 0);
+            }
+
+            dialog_mode_ = DialogMode::None;
+            request_redraw();
+        }
+
+        void send_repair()
+        {
+            std::lock_guard<std::mutex> lock(client_mutex_);
+            if (client_ && client_->connected && (client_->valid_actions & VALID_ACTION_REPAIR_PLANET))
+                client_send_action(client_.get(), USER_ACTION_REPAIR_PLANET, -1, 20, 0);
+        }
+
+        void send_upgrade_planet()
+        {
+            std::lock_guard<std::mutex> lock(client_mutex_);
+            if (client_ && client_->connected && (client_->valid_actions & VALID_ACTION_UPGRADE_PLANET))
+                client_send_action(client_.get(), USER_ACTION_UPGRADE_PLANET, -1, 0, 0);
+        }
+
+        void send_upgrade_ship()
+        {
+            std::lock_guard<std::mutex> lock(client_mutex_);
+            if (client_ && client_->connected && (client_->valid_actions & VALID_ACTION_UPGRADE_SHIP))
+                client_send_action(client_.get(), USER_ACTION_UPGRADE_SHIP, -1, 0, 0);
+        }
+
+        // SERVER HOSTING
 
         void start_local_server()
         {
             if (hosting_)
             {
-                append_log("Local server already running.");
+                append_server_log("Local server already running.");
                 return;
             }
 
             ServerPtr server(server_create(), &server_destroy);
             if (!server)
             {
-                append_log("Unable to allocate server context.");
+                append_server_log("Unable to allocate server context.");
                 return;
             }
 
             if (server_init(server.get(), MAX_PLAYERS) != 0)
             {
-                append_log("Failed to initialize server context.");
+                append_server_log("Failed to initialize server context.");
                 return;
             }
 
             server_start(server.get());
             if (!server->running)
             {
-                append_log("Server failed to start. Is port " + std::to_string(DEFAULT_PORT) + " busy?");
+                append_server_log("Server failed to start. Is port " + std::to_string(DEFAULT_PORT) + " busy?");
                 return;
             }
 
             host_server_ = std::move(server);
             hosting_ = true;
-            append_log("Local server started on port " + std::to_string(DEFAULT_PORT) + ". Join via 127.0.0.1.");
+            append_server_log("Local server started on port " + std::to_string(DEFAULT_PORT) + ".");
             request_redraw();
         }
 
@@ -502,69 +788,66 @@ namespace
             server_stop(host_server_.get());
             host_server_.reset();
             hosting_ = false;
-            append_log("Local server stopped.");
+            append_server_log("Local server stopped.");
             request_redraw();
         }
 
-        void toggle_local_server()
-        {
-            if (hosting_)
-            {
-                stop_local_server();
-            }
-            else
-            {
-                start_local_server();
-            }
-        }
+        // LOGGING
 
         static void log_thunk(const char *line, void *userdata)
         {
             if (!userdata)
-            {
                 return;
-            }
             static_cast<ArmadaApp *>(userdata)->append_log(line ? std::string{line} : std::string{});
         }
 
         void append_log(const std::string &line)
         {
             std::lock_guard<std::mutex> lock(log_mutex_);
-            if (!line.empty())
-            {
-                logs_.push_back(line);
-            }
-            else
-            {
-                logs_.push_back(std::string{});
-            }
+            logs_.push_back(line.empty() ? std::string{} : line);
             while (logs_.size() > kMaxLogs)
-            {
                 logs_.pop_front();
-            }
             request_redraw();
         }
 
-    private:
+        void append_server_log(const std::string &line)
+        {
+            std::lock_guard<std::mutex> lock(server_log_mutex_);
+            if (!line.empty())
+                server_logs_.push_back(line);
+            while (server_logs_.size() > kMaxLogs)
+                server_logs_.pop_front();
+            request_redraw();
+        }
+
         void request_redraw()
         {
             if (screen_ && loop_running_.load(std::memory_order_acquire))
-            {
                 screen_->PostEvent(Event::Custom);
-            }
         }
 
-        ScreenInteractive *screen_ = nullptr;
-        View view_ = View::Menu;
-        int view_index_ = 0;
+        // MEMBER VARIABLES
 
-        Component menu_component_;
+        ScreenInteractive *screen_ = nullptr;
+
+        // Main tab state
+        int main_tab_index_ = 0;
+
+        // Play tab sub-view state
+        PlayView play_view_ = PlayView::JoinServer;
+        int play_view_index_ = 0;
+
+        // Components
+        Component host_component_;
+        Component play_component_;
         Component join_component_;
         Component session_component_;
         Component name_input_component_;
         Component manual_input_component_;
         Component host_list_component_;
+        Component target_list_component_;
 
+        // Join state
         std::string player_name_ = "Voyager";
         std::string manual_ip_;
         std::vector<std::string> lan_hosts_;
@@ -572,19 +855,33 @@ namespace
         int selected_host_index_ = 0;
         std::mutex host_mutex_;
 
+        // Scanning
         std::thread scan_thread_;
         std::atomic<bool> scanning_{false};
+        std::atomic<bool> scan_now_requested_{false};
 
+        // Client connection
         ClientPtr client_{nullptr, &client_destroy};
         std::mutex client_mutex_;
         std::thread pump_thread_;
         std::atomic<bool> pumping_{false};
         std::string active_address_;
+
+        // Server hosting
         ServerPtr host_server_{nullptr, &server_destroy};
         bool hosting_ = false;
 
+        // Dialog state
+        DialogMode dialog_mode_ = DialogMode::None;
+        std::vector<std::wstring> target_players_display_;
+        std::vector<int> target_player_ids_;
+        int selected_target_index_ = 0;
+
+        // Logging
         std::mutex log_mutex_;
         std::deque<std::string> logs_{};
+        std::mutex server_log_mutex_;
+        std::deque<std::string> server_logs_{};
         static constexpr std::size_t kMaxLogs = 200;
         std::atomic<bool> loop_running_{false};
     };
@@ -593,6 +890,5 @@ namespace
 extern "C" int armada_tui_run(void)
 {
     ArmadaApp app;
-    int result = app.run();
-    return result;
+    return app.run();
 }

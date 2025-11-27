@@ -44,6 +44,7 @@ static void server_start_match(ServerContext *ctx);
 static void server_emit_turn_event(ServerContext *ctx, EventType type, int turn_number, int current_id, int next_id, int is_match_start, const EventPayload_UserAction *last_action);
 static void server_advance_turn(ServerContext *ctx, const EventPayload_UserAction *last_action);
 static int server_next_active_player(ServerContext *ctx, int start_after);
+static int server_compute_valid_actions(ServerContext *ctx, int player_id, int current_player_id);
 
 // Misc helpers
 static void server_emit_threshold_event(ServerContext *ctx, int player_id);
@@ -527,14 +528,6 @@ static void server_handle_user_action(ServerContext *ctx, const EventPayload_Use
         break;
     case USER_ACTION_END_TURN:
         break;
-    case USER_ACTION_SET_DEFENSE:
-        player->is_defending = payload->value;
-        if (payload->value >= 100)
-        {
-            player->stars = 0;
-            player->has_crossed_threshold = 0;
-        }
-        break;
     case USER_ACTION_UPGRADE_PLANET:
         player->planet.level += 1;
         break;
@@ -906,7 +899,6 @@ static void server_reset_player(PlayerState *player, int player_id, const char *
     player->ship.level = STARTING_SHIP_LEVEL;
     player->ship.base_damage = STARTING_SHIP_BASE_DAMAGE;
     player->ship.upgrade_cost = 0;
-    player->is_defending = 0;
     player->has_crossed_threshold = 0;
 }
 
@@ -967,6 +959,57 @@ static void server_start_match(ServerContext *ctx)
     server_broadcast_current_turn(ctx, 1, NULL);
 }
 
+// Compute valid actions for a player (must be called with mutex locked)
+static int server_compute_valid_actions(ServerContext *ctx, int player_id, int current_player_id)
+{
+    int valid = 0;
+
+    // Only the current player can take actions during their turn
+    if (player_id != current_player_id)
+    {
+        return 0;
+    }
+
+    PlayerState *player = server_get_player(ctx, player_id);
+    if (!player || !player->is_active)
+    {
+        return 0;
+    }
+
+    // End turn is always valid
+    valid |= VALID_ACTION_END_TURN;
+
+    // Attack planet: valid if there are other players to attack
+    for (int i = 0; i < MAX_PLAYERS; ++i)
+    {
+        if (i != player_id && ctx->game_state.players[i].planet.current_health > 0 && ctx->game_state.players[i].is_active)
+        {
+            valid |= VALID_ACTION_ATTACK_PLANET;
+            break;
+        }
+    }
+
+    // Repair planet: valid if planet is damaged
+    if (player->planet.current_health < player->planet.max_health)
+    {
+        valid |= VALID_ACTION_REPAIR_PLANET;
+    }
+
+    // Upgrade planet: always valid if player has stars. TODO: Calculate cost
+    if (player->stars > 0)
+    {
+        valid |= VALID_ACTION_UPGRADE_PLANET;
+    }
+
+    // Upgrade ship: always valid if player has stars. TODO: Calculate cost
+    if (player->stars > 0)
+    {
+        valid |= VALID_ACTION_UPGRADE_SHIP;
+    }
+
+    return valid;
+}
+
 // Emit a turn event to all players
 static void server_emit_turn_event(ServerContext *ctx, EventType type, int turn_number, int current_id, int next_id, int is_match_start, const EventPayload_UserAction *last_action)
 {
@@ -987,6 +1030,11 @@ static void server_emit_turn_event(ServerContext *ctx, EventType type, int turn_
             continue;
         }
 
+        // Compute valid actions for this viewer
+        pthread_mutex_lock(&ctx->state_mutex);
+        int valid_actions = server_compute_valid_actions(ctx, viewers[i], current_id);
+        pthread_mutex_unlock(&ctx->state_mutex);
+
         GameEvent event;
         memset(&event, 0, sizeof(GameEvent));
         event.type = type;
@@ -995,6 +1043,7 @@ static void server_emit_turn_event(ServerContext *ctx, EventType type, int turn_
         event.data.turn.next_player_id = next_id;
         event.data.turn.turn_number = turn_number;
         event.data.turn.is_match_start = is_match_start;
+        event.data.turn.valid_actions = valid_actions;
         event.data.turn.last_action = *action_payload;
         event.data.turn.game = snapshot;
 

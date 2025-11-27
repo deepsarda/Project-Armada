@@ -27,7 +27,6 @@ typedef enum
     USER_ACTION_REPAIR_PLANET,
     USER_ACTION_UPGRADE_PLANET,
     USER_ACTION_UPGRADE_SHIP,
-    USER_ACTION_SET_DEFENSE
 } UserActionType;
 
 typedef struct
@@ -53,7 +52,6 @@ typedef struct
     int is_active;
     int is_connected;
     int stars;
-    int is_defending;
     int has_crossed_threshold;
     PlanetStats planet;
     ShipStats ship;

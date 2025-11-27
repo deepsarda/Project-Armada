@@ -57,6 +57,10 @@ int client_init(ClientContext *ctx, const char *player_name)
     ctx->is_host = 0;
     ctx->socket_fd = NET_INVALID_SOCKET;
     ctx->has_state_snapshot = 0;
+    ctx->match_started = 0;
+    ctx->current_turn_player_id = -1;
+    ctx->turn_number = 0;
+    ctx->valid_actions = 0;
     memset(&ctx->player_game_state, 0, sizeof(PlayerGameState));
 
     return client_main_init(ctx, ctx->player_name);
@@ -209,17 +213,23 @@ static void client_handle_event(ClientContext *ctx, const GameEvent *event)
         client_main_on_host_update(ctx, &event->data.host_update);
         break;
     case EVENT_MATCH_START:
+        ctx->match_started = 1;
         client_main_on_match_start(ctx, &event->data.match_start);
         break;
     case EVENT_TURN_STARTED:
         ctx->player_game_state = event->data.turn.game;
         ctx->has_state_snapshot = 1;
+        ctx->current_turn_player_id = event->data.turn.current_player_id;
+        ctx->turn_number = event->data.turn.turn_number;
+        ctx->valid_actions = event->data.turn.valid_actions;
         client_main_on_turn_event(ctx, event->type, &event->data.turn);
         break;
     case EVENT_STAR_THRESHOLD_REACHED:
         client_main_on_threshold(ctx, &event->data.threshold);
         break;
     case EVENT_GAME_OVER:
+        ctx->match_started = 0;
+        ctx->valid_actions = 0;
         client_main_on_game_over(ctx, event->data.game_over.winner_id);
         break;
     case EVENT_ERROR:

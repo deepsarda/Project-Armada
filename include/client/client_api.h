@@ -21,6 +21,12 @@ extern "C"
         net_socket_t socket_fd;
         PlayerGameState player_game_state;
         int has_state_snapshot;
+
+        // Match state tracking
+        int match_started;
+        int current_turn_player_id;
+        int turn_number;
+        int valid_actions; // Bitmask of valid actions for this player
     } ClientContext;
 
     ClientContext *client_create(const char *name);
