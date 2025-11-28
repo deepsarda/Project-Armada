@@ -19,9 +19,6 @@ This file implements the low-level transport layer, abstracting differences betw
 *   **Purpose:** Cleans up platform resources on program exit.
 *   **Logic:** Checks if initialized, then calls `WSACleanup()` (Windows only).
 
-
-This is **Part 2** of the comprehensive documentation, covering the **Client Core**, **Server Callbacks**, **UI Notification Bridge**, and the **Main Application Logic**.
-
 #### `net_set_blocking`
 *   **Signature:** `static int net_set_blocking(net_socket_t sock, int should_block)`
 *   **Purpose:** Toggles a specific socket between blocking and non-blocking mode.
