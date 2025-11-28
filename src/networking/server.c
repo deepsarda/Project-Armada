@@ -566,6 +566,7 @@ static void server_handle_user_action(ServerContext *ctx, const EventPayload_Use
 
     pthread_mutex_unlock(&ctx->state_mutex);
 
+    // TODO: Loop into turn update
     if (emit_threshold)
     {
         server_emit_threshold_event(ctx, threshold_player_id);
@@ -965,7 +966,7 @@ static int server_compute_valid_actions(ServerContext *ctx, int player_id, int c
     // Attack planet: valid if there are other players to attack
     for (int i = 0; i < MAX_PLAYERS; ++i)
     {
-        if (i != player_id && ctx->game_state.players[i].planet.current_health > 0 && ctx->game_state.players[i].is_active)
+        if (i != player_id && ctx->game_state.players[i].is_active)
         {
             valid |= VALID_ACTION_ATTACK_PLANET;
             break;
@@ -1205,7 +1206,8 @@ static int server_select_host_locked(ServerContext *ctx)
     return -1;
 }
 
-// Convert health to coarse percent (25/50/75/100)
+// Convert health to coarse percent (25/50/75/100).
+// TODO: Deep: make this damage not health
 static int to_coarse_percent(int current, int max)
 {
     if (max <= 0)
