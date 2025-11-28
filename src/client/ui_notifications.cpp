@@ -11,6 +11,10 @@ namespace
     ArmadaUiLogSink g_log_sink = nullptr;
     void *g_log_userdata = nullptr;
 
+    std::mutex g_server_log_mutex;
+    ArmadaUiLogSink g_server_log_sink = nullptr;
+    void *g_server_log_userdata = nullptr;
+
     constexpr std::size_t kLogBufferSize = 512;
 }
 
@@ -48,5 +52,43 @@ extern "C" void armada_ui_logf(const char *fmt, ...)
     va_list args;
     va_start(args, fmt);
     armada_ui_vlogf(fmt, args);
+    va_end(args);
+}
+
+// Server log sink functions
+extern "C" void armada_server_set_log_sink(ArmadaUiLogSink sink, void *userdata)
+{
+    std::lock_guard<std::mutex> lock(g_server_log_mutex);
+    g_server_log_sink = sink;
+    g_server_log_userdata = userdata;
+}
+
+extern "C" void armada_server_log(const char *line)
+{
+    std::lock_guard<std::mutex> lock(g_server_log_mutex);
+    if (!g_server_log_sink)
+    {
+        return;
+    }
+    g_server_log_sink(line ? line : "", g_server_log_userdata);
+}
+
+extern "C" void armada_server_vlogf(const char *fmt, va_list args)
+{
+    if (!fmt)
+    {
+        return;
+    }
+
+    char buffer[kLogBufferSize];
+    vsnprintf(buffer, sizeof(buffer), fmt, args);
+    armada_server_log(buffer);
+}
+
+extern "C" void armada_server_logf(const char *fmt, ...)
+{
+    va_list args;
+    va_start(args, fmt);
+    armada_server_vlogf(fmt, args);
     va_end(args);
 }

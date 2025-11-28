@@ -1,5 +1,3 @@
-// server.c - Networking server implementation for multiplayer game
-
 #include "../../include/server/server_api.h"
 #include "../../include/server/main.h"
 #include "../../include/networking/network.h"
@@ -116,8 +114,8 @@ int server_init(ServerContext *ctx, int max_players)
     ctx->game_state.winner_id = -1;
     pthread_mutex_unlock(&ctx->state_mutex);
 
-    server_main_init(ctx);
-    server_main_on_initialized(ctx, clamped_max);
+    server_on_init(ctx);
+    server_on_initialized(ctx, clamped_max);
     return 0;
 }
 
@@ -127,11 +125,11 @@ void server_start(ServerContext *ctx)
     if (!ctx)
         return;
 
-    server_main_on_starting(ctx, DEFAULT_PORT);
+    server_on_starting(ctx, DEFAULT_PORT);
     ctx->server_socket = net_create_server_socket(DEFAULT_PORT);
     if (ctx->server_socket == NET_INVALID_SOCKET)
     {
-        server_main_on_start_failed(ctx, "Failed to create socket");
+        server_on_start_failed(ctx, "Failed to create socket");
         return;
     }
 
@@ -144,7 +142,7 @@ void server_start(ServerContext *ctx)
 
     if (pthread_create(&ctx->accept_thread, NULL, server_accept_thread, ctx) != 0)
     {
-        server_main_on_accept_thread_failed(ctx, "Failed to create accept thread");
+        server_on_accept_thread_failed(ctx, "Failed to create accept thread");
         ctx->running = 0;
         net_close_socket(ctx->server_socket);
         ctx->server_socket = NET_INVALID_SOCKET;
@@ -152,7 +150,7 @@ void server_start(ServerContext *ctx)
     }
     else
     {
-        server_main_on_started(ctx, DEFAULT_PORT);
+        server_on_started(ctx, DEFAULT_PORT);
     }
 }
 
@@ -162,7 +160,7 @@ void server_stop(ServerContext *ctx)
     if (!ctx)
         return;
 
-    server_main_on_stopping(ctx);
+    server_on_stopping(ctx);
     ctx->running = 0;
 
     server_stop_discovery_service(ctx);
@@ -321,7 +319,7 @@ static void *server_accept_thread(void *arg)
     struct sockaddr_in address;
     socklen_t addrlen = sizeof(address);
 
-    server_main_on_accept_thread_started(ctx);
+    server_on_accept_thread_started(ctx);
 
     while (ctx->running)
     {
@@ -334,7 +332,7 @@ static void *server_accept_thread(void *arg)
             continue;
         }
 
-        server_main_on_client_connected(ctx, new_socket);
+        server_on_client_connected(ctx, new_socket);
 
         // Create a thread for this client
         ClientThreadArgs *args = malloc(sizeof(ClientThreadArgs));
@@ -344,7 +342,7 @@ static void *server_accept_thread(void *arg)
         pthread_t tid;
         if (pthread_create(&tid, NULL, server_client_thread, args) != 0)
         {
-            server_main_on_accept_thread_failed(ctx, "Failed to create client thread");
+            server_on_accept_thread_failed(ctx, "Failed to create client thread");
             free(args);
             net_close_socket(new_socket);
         }
@@ -370,7 +368,7 @@ static void *server_client_thread(void *arg)
         int result = net_receive_event(sock, &event);
         if (result <= 0)
         {
-            server_main_on_client_disconnected(ctx, sock);
+            server_on_client_disconnected(ctx, sock);
             break;
         }
 
@@ -407,7 +405,7 @@ static void server_handle_event(ServerContext *ctx, const GameEvent *event)
         server_handle_match_start_request(ctx, event->sender_id);
         break;
     default:
-        server_main_on_unhandled_event(ctx, event->type);
+        server_on_unhandled_event(ctx, event->type);
         break;
     }
 }
@@ -529,30 +527,15 @@ static void server_handle_user_action(ServerContext *ctx, const EventPayload_Use
     case USER_ACTION_END_TURN:
         break;
     case USER_ACTION_UPGRADE_PLANET:
-        player->planet.level += 1;
-        break;
     case USER_ACTION_UPGRADE_SHIP:
-        player->ship.level += 1;
-        break;
     case USER_ACTION_REPAIR_PLANET:
-        player->planet.current_health = clamp_int(player->planet.current_health + payload->value, 0, player->planet.max_health);
-        break;
     case USER_ACTION_ATTACK_PLANET:
-        if (payload->target_player_id >= 0)
-        {
-            PlayerState *target = server_get_player(ctx, payload->target_player_id);
-            if (target)
-            {
-                target->planet.current_health = clamp_int(target->planet.current_health - payload->value, 0, target->planet.max_health);
-            }
-        }
+        server_on_turn_action(ctx, payload, &action_result);
         break;
     default:
-        server_main_on_unknown_action(ctx, payload->action_type, payload->player_id);
+        server_on_unknown_action(ctx, payload->action_type, payload->player_id);
         break;
     }
-
-    server_main_on_turn_action(ctx, payload, &action_result);
 
     // Check for game over
     if (action_result.game_over)
@@ -588,6 +571,7 @@ static void server_handle_user_action(ServerContext *ctx, const EventPayload_Use
         server_emit_threshold_event(ctx, threshold_player_id);
     }
 
+    // TODO: Fix... For deep
     if (conclude_game)
     {
         GameEvent over_event;
@@ -898,7 +882,6 @@ static void server_reset_player(PlayerState *player, int player_id, const char *
     player->planet.base_income = STARTING_PLANET_INCOME;
     player->ship.level = STARTING_SHIP_LEVEL;
     player->ship.base_damage = STARTING_SHIP_BASE_DAMAGE;
-    player->ship.upgrade_cost = 0;
     player->has_crossed_threshold = 0;
 }
 
@@ -1088,6 +1071,27 @@ static void server_advance_turn(ServerContext *ctx, const EventPayload_UserActio
     {
         pthread_mutex_unlock(&ctx->state_mutex);
         return;
+    }
+
+    // Add planet income to the player whose turn is starting
+    // Income = base_income * (current_health / max_health)
+    PlayerState *next_player_state = server_get_player(ctx, next_player);
+    if (next_player_state && next_player_state->is_active)
+    {
+        PlanetStats *planet = &next_player_state->planet;
+        if (planet->max_health > 0)
+        {
+            // Calculate health ratio (scaled 0.0 to 1.0)
+            double health_ratio = (double)planet->current_health / (double)planet->max_health;
+            // Clamp to [0, 1]
+            if (health_ratio < 0.0)
+                health_ratio = 0.0;
+            if (health_ratio > 1.0)
+                health_ratio = 1.0;
+            // Calculate income: base_income * health_ratio
+            int income = (int)(planet->base_income * health_ratio);
+            next_player_state->stars += income;
+        }
     }
 
     ctx->game_state.turn.current_player_id = next_player;

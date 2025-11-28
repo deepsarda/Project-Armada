@@ -24,13 +24,12 @@ set(SRC_DIR src)
 
 file(GLOB_RECURSE C_SRCS
     "${SRC_DIR}/networking/*.c"
-    "${SRC_DIR}/client/*.c"
     "${SRC_DIR}/server/*.c"
 )
 
 file(GLOB_RECURSE CPP_SRCS
     "${SRC_DIR}/*.cpp"
-    "${SRC_DIR}/ui/*.cpp"
+    "${SRC_DIR}/client/*.cpp"
 )
 
 add_executable(armada ${C_SRCS} ${CPP_SRCS})

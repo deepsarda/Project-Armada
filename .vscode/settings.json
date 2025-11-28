@@ -5,6 +5,7 @@
         "game_types.h": "c",
         "sstream": "cpp",
         "mutex": "cpp",
-        "chrono": "cpp"
+        "chrono": "cpp",
+        "net_platform.h": "c"
     }
 }

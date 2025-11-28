@@ -10,10 +10,17 @@ extern "C"
 
     typedef void (*ArmadaUiLogSink)(const char *line, void *userdata);
 
+    // Client/game log sink (shows in Play tab)
     void armada_ui_set_log_sink(ArmadaUiLogSink sink, void *userdata);
     void armada_ui_log(const char *line);
     void armada_ui_logf(const char *fmt, ...);
     void armada_ui_vlogf(const char *fmt, va_list args);
+
+    // Server log sink (shows in Host tab)
+    void armada_server_set_log_sink(ArmadaUiLogSink sink, void *userdata);
+    void armada_server_log(const char *line);
+    void armada_server_logf(const char *fmt, ...);
+    void armada_server_vlogf(const char *fmt, va_list args);
 
 #ifdef __cplusplus
 }

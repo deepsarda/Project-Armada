@@ -63,7 +63,7 @@ int client_init(ClientContext *ctx, const char *player_name)
     ctx->valid_actions = 0;
     memset(&ctx->player_game_state, 0, sizeof(PlayerGameState));
 
-    return client_main_init(ctx, ctx->player_name);
+    return client_on_init(ctx, ctx->player_name);
 }
 
 // Connects the client to the server at the given address
@@ -73,17 +73,17 @@ int client_connect(ClientContext *ctx, const char *server_addr)
         return -1;
 
     const char *addr = server_addr ? server_addr : "127.0.0.1";
-    client_main_on_connecting(ctx, addr, DEFAULT_PORT);
+    client_on_connecting(ctx, addr, DEFAULT_PORT);
 
     ctx->socket_fd = net_connect_to_server(addr, DEFAULT_PORT);
     if (ctx->socket_fd == NET_INVALID_SOCKET)
     {
-        client_main_on_connection_failed(ctx, addr, DEFAULT_PORT);
+        client_on_connection_failed(ctx, addr, DEFAULT_PORT);
         return -1;
     }
 
     ctx->connected = 1;
-    client_main_on_connected(ctx);
+    client_on_connected(ctx);
 
     // Send join request event to server
     GameEvent join_event;
@@ -93,7 +93,7 @@ int client_connect(ClientContext *ctx, const char *server_addr)
     join_event.timestamp = time(NULL);
     strncpy(join_event.data.join_req.player_name, ctx->player_name, sizeof(join_event.data.join_req.player_name) - 1);
 
-    client_main_on_join_request(ctx);
+    client_on_join_request(ctx);
     net_send_event(ctx->socket_fd, &join_event);
     return 0;
 }
@@ -106,7 +106,7 @@ void client_disconnect(ClientContext *ctx)
 
     if (ctx->connected)
     {
-        client_main_on_disconnected(ctx);
+        client_on_disconnected(ctx);
     }
     ctx->connected = 0;
     ctx->is_host = 0;
@@ -135,7 +135,7 @@ void client_send_action(ClientContext *ctx, UserActionType action_type, int targ
     action_event.data.action.value = value;
     action_event.data.action.metadata = metadata;
 
-    client_main_on_action_sent(ctx, action_type, target_player_id, value, metadata);
+    client_on_action_sent(ctx, action_type, target_player_id, value, metadata);
     net_send_event(ctx->socket_fd, &action_event);
 }
 
@@ -172,7 +172,7 @@ void client_pump(ClientContext *ctx)
     if (result < 0)
     {
         ctx->connected = 0;
-        client_main_on_disconnected(ctx);
+        client_on_disconnected(ctx);
         if (ctx->socket_fd != NET_INVALID_SOCKET)
         {
             net_close_socket(ctx->socket_fd);
@@ -199,22 +199,22 @@ static void client_handle_event(ClientContext *ctx, const GameEvent *event)
             ctx->host_player_id = event->data.join_ack.host_player_id;
             ctx->is_host = event->data.join_ack.is_host;
         }
-        client_main_on_join_ack(ctx, &event->data.join_ack);
+        client_on_join_ack(ctx, &event->data.join_ack);
         break;
     case EVENT_PLAYER_JOINED:
-        client_main_on_player_joined(ctx, &event->data.player_event);
+        client_on_player_joined(ctx, &event->data.player_event);
         break;
     case EVENT_PLAYER_LEFT:
-        client_main_on_player_left(ctx, &event->data.player_event);
+        client_on_player_left(ctx, &event->data.player_event);
         break;
     case EVENT_HOST_UPDATED:
         ctx->host_player_id = event->data.host_update.host_player_id;
         ctx->is_host = (ctx->player_id >= 0 && ctx->player_id == ctx->host_player_id);
-        client_main_on_host_update(ctx, &event->data.host_update);
+        client_on_host_update(ctx, &event->data.host_update);
         break;
     case EVENT_MATCH_START:
         ctx->match_started = 1;
-        client_main_on_match_start(ctx, &event->data.match_start);
+        client_on_match_start(ctx, &event->data.match_start);
         break;
     case EVENT_TURN_STARTED:
         ctx->player_game_state = event->data.turn.game;
@@ -222,18 +222,18 @@ static void client_handle_event(ClientContext *ctx, const GameEvent *event)
         ctx->current_turn_player_id = event->data.turn.current_player_id;
         ctx->turn_number = event->data.turn.turn_number;
         ctx->valid_actions = event->data.turn.valid_actions;
-        client_main_on_turn_event(ctx, event->type, &event->data.turn);
+        client_on_turn_event(ctx, event->type, &event->data.turn);
         break;
     case EVENT_STAR_THRESHOLD_REACHED:
-        client_main_on_threshold(ctx, &event->data.threshold);
+        client_on_threshold(ctx, &event->data.threshold);
         break;
     case EVENT_GAME_OVER:
         ctx->match_started = 0;
         ctx->valid_actions = 0;
-        client_main_on_game_over(ctx, event->data.game_over.winner_id);
+        client_on_game_over(ctx, event->data.game_over.winner_id);
         break;
     case EVENT_ERROR:
-        client_main_on_match_stop(ctx, &event->data.error);
+        client_on_match_stop(ctx, &event->data.error);
         break;
     default:
         break;

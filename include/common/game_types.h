@@ -35,14 +35,12 @@ typedef struct
     int max_health;
     int current_health;
     int base_income;
-    int upgrade_cost;
 } PlanetStats;
 
 typedef struct
 {
     int level;
     int base_damage;
-    int upgrade_cost;
 } ShipStats;
 
 typedef struct
