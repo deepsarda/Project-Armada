@@ -198,15 +198,45 @@ static void client_handle_event(ClientContext *ctx, const GameEvent *event)
             ctx->player_id = event->data.join_ack.player_id;
             ctx->host_player_id = event->data.join_ack.host_player_id;
             ctx->is_host = event->data.join_ack.is_host;
+            // Initialize our own entry in the player list
+            if (ctx->player_id >= 0 && ctx->player_id < MAX_PLAYERS)
+            {
+                ctx->player_game_state.viewer_id = ctx->player_id;
+                ctx->player_game_state.entries[ctx->player_id].player_id = ctx->player_id;
+                ctx->player_game_state.entries[ctx->player_id].is_active = 1;
+                strncpy(ctx->player_game_state.entries[ctx->player_id].name, ctx->player_name,
+                        sizeof(ctx->player_game_state.entries[ctx->player_id].name) - 1);
+                ctx->player_game_state.entries[ctx->player_id].name[MAX_NAME_LEN - 1] = '\0';
+            }
         }
         client_on_join_ack(ctx, &event->data.join_ack);
         break;
     case EVENT_PLAYER_JOINED:
-        client_on_player_joined(ctx, &event->data.player_event);
+    {
+        const EventPayload_PlayerLifecycle *pl = &event->data.player_event;
+        // Update the player list with the newly joined player
+        if (pl->player_id >= 0 && pl->player_id < MAX_PLAYERS)
+        {
+            ctx->player_game_state.entries[pl->player_id].player_id = pl->player_id;
+            ctx->player_game_state.entries[pl->player_id].is_active = 1;
+            strncpy(ctx->player_game_state.entries[pl->player_id].name, pl->player_name,
+                    sizeof(ctx->player_game_state.entries[pl->player_id].name) - 1);
+            ctx->player_game_state.entries[pl->player_id].name[MAX_NAME_LEN - 1] = '\0';
+        }
+        client_on_player_joined(ctx, pl);
         break;
+    }
     case EVENT_PLAYER_LEFT:
-        client_on_player_left(ctx, &event->data.player_event);
+    {
+        const EventPayload_PlayerLifecycle *pl = &event->data.player_event;
+        // Mark the player as inactive in the player list
+        if (pl->player_id >= 0 && pl->player_id < MAX_PLAYERS)
+        {
+            ctx->player_game_state.entries[pl->player_id].is_active = 0;
+        }
+        client_on_player_left(ctx, pl);
         break;
+    }
     case EVENT_HOST_UPDATED:
         ctx->host_player_id = event->data.host_update.host_player_id;
         ctx->is_host = (ctx->player_id >= 0 && ctx->player_id == ctx->host_player_id);

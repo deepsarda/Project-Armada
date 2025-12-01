@@ -461,6 +461,35 @@ static void server_handle_player_join(ServerContext *ctx, net_socket_t sender_so
 
     server_send_event_to(ctx, ack_event.data.join_ack.player_id, &ack_event);
 
+    // Send existing players info to the new joiner
+    int new_player_id = ack_event.data.join_ack.player_id;
+
+    // Collect existing players while holding the lock
+    GameEvent existing_events[MAX_PLAYERS];
+    int existing_count = 0;
+
+    pthread_mutex_lock(&ctx->state_mutex);
+    for (int i = 0; i < MAX_PLAYERS; ++i)
+    {
+        if (i != new_player_id && ctx->game_state.players[i].is_active)
+        {
+            memset(&existing_events[existing_count], 0, sizeof(GameEvent));
+            existing_events[existing_count].type = EVENT_PLAYER_JOINED;
+            existing_events[existing_count].timestamp = time(NULL);
+            existing_events[existing_count].data.player_event.player_id = i;
+            strncpy(existing_events[existing_count].data.player_event.player_name,
+                    ctx->game_state.players[i].name, MAX_NAME_LEN - 1);
+            existing_count++;
+        }
+    }
+    pthread_mutex_unlock(&ctx->state_mutex);
+
+    // Send events outside the lock to avoid deadlock
+    for (int i = 0; i < existing_count; ++i)
+    {
+        server_send_event_to(ctx, new_player_id, &existing_events[i]);
+    }
+
     // Notify all players of new join
     GameEvent lifecycle;
     memset(&lifecycle, 0, sizeof(GameEvent));

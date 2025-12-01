@@ -34,17 +34,24 @@ namespace
     using ftxui::Color;
     using ftxui::Component;
     namespace Container = ftxui::Container;
+    using ftxui::bgcolor;
+    using ftxui::center;
+    using ftxui::clear_under;
+    using ftxui::dbox;
     using ftxui::dim;
     using ftxui::Element;
     using ftxui::Event;
     using ftxui::flex;
     using ftxui::flex_shrink;
+    using ftxui::focus;
+    using ftxui::frame;
     using ftxui::GREATER_THAN;
     using ftxui::hbox;
     using ftxui::HEIGHT;
     using ftxui::Input;
     using ftxui::Maybe;
     using ftxui::Menu;
+    using ftxui::Modal;
     using ftxui::paragraph;
     using ftxui::Radiobox;
     using ftxui::Renderer;
@@ -53,8 +60,10 @@ namespace
     using ftxui::size;
     using ftxui::text;
     using ftxui::vbox;
+    using ftxui::vscroll_indicator;
     using ftxui::WIDTH;
     using ftxui::window;
+    using ftxui::yframe;
 
     // Parse ANSI color codes and convert to FTXUI elements
     Element parse_ansi_line(const std::string &line)
@@ -285,8 +294,8 @@ namespace
 
         Component build_server_controls()
         {
-            auto start_btn = SimpleButton("Start Server", [&]
-                                          { start_local_server(); });
+            auto start_btn = Button("Start Server", [&]
+                                    { start_local_server(); }, ButtonOption::Simple());
             auto stop_btn = SimpleButton("Stop Server", [&]
                                          { stop_local_server(); });
 
@@ -296,7 +305,16 @@ namespace
             auto stop_visible = stop_btn | Maybe([&]
                                                  { return hosting_; });
 
-            return Container::Horizontal({start_visible, stop_visible});
+            auto controls = Container::Horizontal({start_visible, stop_visible});
+
+            // Wrap to auto-focus start button when not hosting
+            return Renderer(controls, [this, controls, start_btn]
+                            {
+                if (!hosting_)
+                {
+                    start_btn->TakeFocus();
+                }
+                return controls->Render(); });
         }
 
         Element render_server_stats()
@@ -359,12 +377,18 @@ namespace
             std::vector<Element> log_elements;
             {
                 std::lock_guard<std::mutex> lock(server_log_mutex_);
-                for (const auto &line : server_logs_)
-                    log_elements.push_back(parse_ansi_line(line));
+                for (size_t i = 0; i < server_logs_.size(); ++i)
+                {
+                    auto line_elem = parse_ansi_line(server_logs_[i]);
+                    // Focus on the last element to auto-scroll to bottom
+                    if (i == server_logs_.size() - 1)
+                        line_elem = line_elem | focus;
+                    log_elements.push_back(line_elem);
+                }
             }
             if (log_elements.empty())
                 return text("(No logs yet)") | flex;
-            return vbox(log_elements) | flex;
+            return vbox(log_elements) | yframe | vscroll_indicator | frame | flex;
         }
 
         void build_host_tab()
@@ -469,6 +493,7 @@ namespace
 
         void show_attack_dialog(const std::vector<int> &planet_ids)
         {
+            (void)planet_ids;
             std::lock_guard<std::mutex> lock(client_mutex_);
             if (!client_ || !client_->connected || !(client_->valid_actions & VALID_ACTION_ATTACK_PLANET))
                 return;
@@ -478,10 +503,12 @@ namespace
             for (int i = 0; i < MAX_PLAYERS; ++i)
             {
                 const PlayerPublicInfo &info = client_->player_game_state.entries[i];
-                if (info.player_id != client_->player_id && info.planet_level > 0)
+                if (info.player_id != client_->player_id && info.is_active)
                 {
+                    std::wstring label = L"P" + std::to_wstring(i) + L" " +
+                                         std::wstring(info.name, info.name + strlen(info.name));
                     target_player_ids_.push_back(i);
-                    target_players_display_.push_back(L"Player " + std::to_wstring(i));
+                    target_players_display_.push_back(label);
                 }
             }
 
@@ -490,6 +517,7 @@ namespace
 
             selected_target_index_ = 0;
             dialog_mode_ = DialogMode::Attack;
+            attack_dialog_shown_ = true;
             request_redraw();
         }
 
@@ -534,29 +562,30 @@ namespace
         {
             target_list_component_ = Radiobox(&target_players_display_, &selected_target_index_);
 
-            auto confirm_btn = SimpleButton("Confirm Attack", [&]
+            auto confirm_btn = SimpleButton("⚔ Confirm Attack", [&]
                                             { confirm_attack(); });
-            auto cancel_btn = SimpleButton("Cancel", [&]
-                                           { dialog_mode_ = DialogMode::None; });
+            auto cancel_btn = SimpleButton("✖ Cancel", [&]
+                                           { dialog_mode_ = DialogMode::None; attack_dialog_shown_ = false; });
 
             auto dialog_buttons = Container::Horizontal({confirm_btn, cancel_btn});
             auto dialog_content = Container::Vertical({target_list_component_, dialog_buttons});
 
-            return dialog_content | Maybe([&]
-                                          { return dialog_mode_ == DialogMode::Attack; });
+            // Wrap in a styled renderer for modal appearance
+            auto styled_dialog = Renderer(dialog_content, [this, dialog_content]
+                                          { return vbox({
+                                                       text("⚔ SELECT TARGET ⚔") | bold | color(Color::Red) | center,
+                                                       separator(),
+                                                       target_list_component_->Render() | flex,
+                                                       separator(),
+                                                       hbox({
+                                                           dialog_content->ChildAt(1)->Render(),
+                                                       }) | center,
+                                                   }) |
+                                                   border | size(WIDTH, GREATER_THAN, 30) | size(HEIGHT, GREATER_THAN, 10) | bgcolor(Color::GrayDark) | clear_under | center; });
+
+            return styled_dialog | Maybe([&]
+                                         { return dialog_mode_ == DialogMode::Attack; });
         }
-
-        /*
-            Element base = main_ui->Render();
-
-            if (attack_dialog_open) {
-                base = dbox({
-                    base,
-                    build_attack_dialog()->Render()
-                });
-            }
-
-            return base; */
 
         std::string hp_hearts(int coarse_health)
         {
@@ -650,12 +679,18 @@ namespace
             std::vector<Element> log_elements;
             {
                 std::lock_guard<std::mutex> lock(log_mutex_);
-                for (const auto &line : logs_)
-                    log_elements.push_back(parse_ansi_line(line));
+                for (size_t i = 0; i < logs_.size(); ++i)
+                {
+                    auto line_elem = parse_ansi_line(logs_[i]);
+                    // Focus on the last element to auto-scroll to bottom
+                    if (i == logs_.size() - 1)
+                        line_elem = line_elem | focus;
+                    log_elements.push_back(line_elem);
+                }
             }
             if (log_elements.empty())
                 return text("Waiting for events...") | flex;
-            return vbox(log_elements) | flex;
+            return vbox(log_elements) | yframe | vscroll_indicator | frame | flex;
         }
 
         Element render_turn_indicator()
@@ -663,6 +698,7 @@ namespace
             bool match_started = false;
             bool is_my_turn = false;
             int current_turn_id = -1;
+            std::string current_player_name;
 
             {
                 std::lock_guard<std::mutex> lock(client_mutex_);
@@ -671,15 +707,22 @@ namespace
                     match_started = client_->match_started;
                     is_my_turn = (client_->current_turn_player_id == client_->player_id);
                     current_turn_id = client_->current_turn_player_id;
+                    if (current_turn_id >= 0 && current_turn_id < MAX_PLAYERS)
+                    {
+                        current_player_name = client_->player_game_state.entries[current_turn_id].name;
+                    }
                 }
             }
+
+            // Golden color: RGB(255, 215, 0)
+            auto golden = Color::RGB(255, 215, 0);
 
             if (match_started)
             {
                 if (is_my_turn)
-                    return text(">>> YOUR TURN <<<") | bold | color(Color::Green);
+                    return text(">>> YOUR TURN <<<") | bold | color(golden);
                 else
-                    return text("Waiting for Player " + std::to_string(current_turn_id) + "...") | dim;
+                    return text("Waiting for P" + std::to_string(current_turn_id) + " " + current_player_name + "...") | color(golden);
             }
             return text("Waiting for match to start...") | dim;
         }
@@ -701,10 +744,10 @@ namespace
             std::lock_guard<std::mutex> lock(client_mutex_);
              return client_ && client_->match_started; });
 
-            auto all_controls = Container::Vertical({prematch_visible, game_controls_visible, attack_dialog});
+            auto base_controls = Container::Vertical({prematch_visible, game_controls_visible});
 
-            session_component_ = Renderer(all_controls, [this, all_controls]
-                                          {
+            auto base_content = Renderer(base_controls, [this, base_controls]
+                                         {
                 std::string server = active_address_.empty() ? "<none>" : active_address_;
                 std::string status;
                 bool is_host = false;
@@ -737,8 +780,11 @@ namespace
                         logs_panel | flex,
                     }) | flex,
                     separator(),
-                    all_controls->Render(),
+                    base_controls->Render(),
                 }) | flex; });
+
+            // Use Modal to overlay the attack dialog
+            session_component_ = Modal(base_content, attack_dialog, &attack_dialog_shown_);
         }
 
         // SCANNING
@@ -895,6 +941,7 @@ namespace
             }
             active_address_.clear();
             dialog_mode_ = DialogMode::None;
+            attack_dialog_shown_ = false;
             if (play_view_ == PlayView::Session)
             {
                 switch_play_view(PlayView::JoinServer);
@@ -947,10 +994,12 @@ namespace
             for (int i = 0; i < MAX_PLAYERS; ++i)
             {
                 const PlayerPublicInfo &info = client_->player_game_state.entries[i];
-                if (info.player_id != client_->player_id && info.planet_level > 0)
+                if (info.player_id != client_->player_id && info.is_active)
                 {
+                    std::wstring label = L"P" + std::to_wstring(i) + L" " +
+                                         std::wstring(info.name, info.name + strlen(info.name));
                     target_player_ids_.push_back(i);
-                    target_players_display_.push_back(L"Player " + std::to_wstring(i));
+                    target_players_display_.push_back(label);
                 }
             }
 
@@ -959,6 +1008,7 @@ namespace
 
             selected_target_index_ = 0;
             dialog_mode_ = DialogMode::Attack;
+            attack_dialog_shown_ = true;
             request_redraw();
         }
 
@@ -971,6 +1021,7 @@ namespace
             if (!client_ || !client_->connected || !(client_->valid_actions & VALID_ACTION_ATTACK_PLANET))
             {
                 dialog_mode_ = DialogMode::None;
+                attack_dialog_shown_ = false;
                 return;
             }
 
@@ -982,6 +1033,7 @@ namespace
             }
 
             dialog_mode_ = DialogMode::None;
+            attack_dialog_shown_ = false;
             request_redraw();
         }
 
@@ -1144,6 +1196,7 @@ namespace
 
         // Dialog state
         DialogMode dialog_mode_ = DialogMode::None;
+        bool attack_dialog_shown_ = false;
         std::vector<std::wstring> target_players_display_;
         std::vector<int> target_player_ids_;
         int selected_target_index_ = 0;
@@ -1175,6 +1228,47 @@ extern "C" int armada_tui_run(void)
 #define CLR_MAGENTA "\033[35m"
 #define CLR_BLUE "\033[34m"
 #define CLR_BOLD "\033[1m"
+
+// Player-specific colors for IDs 0-3, and server (-1)
+#define CLR_PLAYER0 "\033[34m" // Blue
+#define CLR_PLAYER1 "\033[32m" // Green
+#define CLR_PLAYER2 "\033[33m" // Yellow
+#define CLR_PLAYER3 "\033[35m" // Magenta
+#define CLR_SERVER "\033[31m"  // Red (for server/ID -1)
+
+// Helper function to get color for a player ID
+static const char *get_player_color(int player_id)
+{
+    switch (player_id)
+    {
+    case 0:
+        return CLR_PLAYER0;
+    case 1:
+        return CLR_PLAYER1;
+    case 2:
+        return CLR_PLAYER2;
+    case 3:
+        return CLR_PLAYER3;
+    case -1:
+        return CLR_SERVER;
+    default:
+        return CLR_CYAN;
+    }
+}
+
+// Helper function to get player name from client context
+static const char *get_player_name_by_id(ClientContext *ctx, int player_id)
+{
+    if (!ctx)
+        return "Unknown";
+    if (player_id < 0 || player_id >= MAX_PLAYERS)
+        return "Server";
+    if (player_id == ctx->player_id)
+        return ctx->player_name;
+    if (ctx->player_game_state.entries[player_id].is_active)
+        return ctx->player_game_state.entries[player_id].name;
+    return "Unknown";
+}
 
 // Helper function to get action name
 static const char *get_action_name(UserActionType type)
@@ -1257,10 +1351,11 @@ extern "C" void client_on_player_joined(ClientContext *ctx, const EventPayload_P
 {
     if (!payload)
         return;
-    armada_ui_logf(CLR_GREEN "[%s]" CLR_RESET " Player " CLR_BOLD "%s" CLR_RESET " (ID %d) joined the game.",
-                   ctx->player_name,
-                   payload->player_name,
-                   payload->player_id);
+    const char *player_clr = get_player_color(payload->player_id);
+    armada_ui_logf("%s[P%d %s]" CLR_RESET " joined the game.",
+                   player_clr,
+                   payload->player_id,
+                   payload->player_name);
 }
 
 extern "C" void client_on_host_update(ClientContext *ctx, const EventPayload_HostUpdate *payload)
@@ -1270,18 +1365,19 @@ extern "C" void client_on_host_update(ClientContext *ctx, const EventPayload_Hos
 
     if (payload->host_player_id >= 0)
     {
-        armada_ui_logf(CLR_MAGENTA "[%s]" CLR_RESET " " CLR_BOLD "%s" CLR_RESET " (ID %d) is now the lobby host.",
-                       ctx->player_name,
-                       payload->host_player_name,
-                       payload->host_player_id);
+        const char *host_clr = get_player_color(payload->host_player_id);
+        armada_ui_logf("%s[P%d %s]" CLR_RESET " is now the lobby host.",
+                       host_clr,
+                       payload->host_player_id,
+                       payload->host_player_name);
         if (ctx && ctx->player_id == payload->host_player_id)
         {
-            armada_ui_logf(CLR_MAGENTA "[%s]" CLR_RESET " " CLR_BOLD "You are now the host!" CLR_RESET);
+            armada_ui_logf(CLR_MAGENTA CLR_BOLD "You are now the host!" CLR_RESET);
         }
     }
     else
     {
-        armada_ui_logf(CLR_YELLOW "[%s]" CLR_RESET " Lobby host cleared. Waiting for a new host...", ctx->player_name);
+        armada_ui_logf(CLR_SERVER "[Server]" CLR_RESET " Lobby host cleared. Waiting for a new host...");
     }
 }
 
@@ -1289,10 +1385,11 @@ extern "C" void client_on_player_left(ClientContext *ctx, const EventPayload_Pla
 {
     if (!payload)
         return;
-    armada_ui_logf(CLR_YELLOW "[%s]" CLR_RESET " Player " CLR_BOLD "%s" CLR_RESET " (ID %d) left the game.",
-                   ctx->player_name,
-                   payload->player_name,
-                   payload->player_id);
+    const char *player_clr = get_player_color(payload->player_id);
+    armada_ui_logf("%s[P%d %s]" CLR_RESET " left the game.",
+                   player_clr,
+                   payload->player_id,
+                   payload->player_name);
 }
 
 extern "C" void client_on_match_start(ClientContext *ctx, const EventPayload_MatchStart *payload)
@@ -1305,17 +1402,25 @@ extern "C" void client_on_match_start(ClientContext *ctx, const EventPayload_Mat
     ctx->has_state_snapshot = 0;
     memset(&ctx->player_game_state, 0, sizeof(PlayerGameState));
 
+    int first_player_id = payload->state.turn.current_player_id;
+    const char *first_clr = get_player_color(first_player_id);
+    const char *first_name = (first_player_id >= 0 && first_player_id < MAX_PLAYERS)
+                                 ? payload->state.players[first_player_id].name
+                                 : "Unknown";
+
     armada_ui_logf(CLR_GREEN CLR_BOLD "=== MATCH STARTED ===" CLR_RESET);
-    armada_ui_logf(CLR_CYAN "[%s]" CLR_RESET " %d players in match. First turn: Player %d.",
-                   ctx->player_name,
+    armada_ui_logf(CLR_SERVER "[Server]" CLR_RESET " %d players in match. First turn: %s[P%d %s]" CLR_RESET ".",
                    payload->state.player_count,
-                   payload->state.turn.current_player_id);
+                   first_clr,
+                   first_player_id,
+                   first_name);
 }
 
 extern "C" void client_on_match_stop(ClientContext *ctx, const EventPayload_Error *payload)
 {
+    (void)ctx;
     const char *reason = (payload) ? payload->message : "Unknown";
-    armada_ui_logf(CLR_RED "[%s] SERVER:" CLR_RESET " %s", ctx->player_name, reason);
+    armada_ui_logf(CLR_SERVER "[Server]" CLR_RESET " %s", reason);
 }
 
 extern "C" void client_on_turn_event(ClientContext *ctx, EventType type, const EventPayload_TurnInfo *payload)
@@ -1325,48 +1430,60 @@ extern "C" void client_on_turn_event(ClientContext *ctx, EventType type, const E
 
     (void)type;
 
+    int current_id = payload->current_player_id;
+    const char *current_clr = get_player_color(current_id);
+    const char *current_name = get_player_name_by_id(ctx, current_id);
+
     // Log whose turn it is
-    if (payload->current_player_id == ctx->player_id)
+    if (current_id == ctx->player_id)
     {
-        armada_ui_logf(CLR_GREEN CLR_BOLD "[%s] >>> YOUR TURN (Turn #%d) <<<" CLR_RESET, ctx->player_name, payload->turn_number);
+        armada_ui_logf("%s" CLR_BOLD "[P%d %s] >>> YOUR TURN (Turn #%d) <<<" CLR_RESET,
+                       current_clr, current_id, current_name, payload->turn_number);
     }
     else
     {
-        armada_ui_logf(CLR_CYAN "[%s]" CLR_RESET " Turn #%d: Player %d's turn.", ctx->player_name, payload->turn_number, payload->current_player_id);
+        armada_ui_logf("%sTurn #%d: [P%d %s]'s turn." CLR_RESET,
+                       current_clr, payload->turn_number, current_id, current_name);
     }
 
     if (payload->is_match_start)
     {
-        armada_ui_logf(CLR_MAGENTA "[%s]" CLR_RESET " Match phase starting!", ctx->player_name);
+        armada_ui_logf(CLR_MAGENTA "Match phase starting!" CLR_RESET);
     }
 
     // Log last action with readable description
     if (payload->last_action.action_type != USER_ACTION_NONE)
     {
+        int actor_id = payload->last_action.player_id;
+        const char *actor_clr = get_player_color(actor_id);
+        const char *actor_name = get_player_name_by_id(ctx, actor_id);
         const char *action_name = get_action_name(payload->last_action.action_type);
+
         if (payload->last_action.action_type == USER_ACTION_ATTACK_PLANET)
         {
-            armada_ui_logf(CLR_RED "[%s]" CLR_RESET " Player %d used " CLR_BOLD "%s" CLR_RESET " on Player %d.",
-                           ctx->player_name,
-                           payload->last_action.player_id,
+            int target_id = payload->last_action.target_player_id;
+            const char *target_clr = get_player_color(target_id);
+            const char *target_name = get_player_name_by_id(ctx, target_id);
+            armada_ui_logf("%s[P%d %s]" CLR_RESET " used " CLR_BOLD "%s" CLR_RESET " on %s[P%d %s]" CLR_RESET ".",
+                           actor_clr, actor_id, actor_name,
                            action_name,
-                           payload->last_action.target_player_id);
+                           target_clr, target_id, target_name);
         }
         else
         {
-            armada_ui_logf(CLR_BLUE "[%s]" CLR_RESET " Player %d used " CLR_BOLD "%s" CLR_RESET ".",
-                           ctx->player_name,
-                           payload->last_action.player_id,
-                           action_name);
+            armada_ui_logf("%s[P%d %s]" CLR_RESET " used " CLR_BOLD "%s" CLR_RESET ".",
+                           actor_clr, actor_id, actor_name, action_name);
         }
     }
 
     // Log threshold crossing
     if (payload->threshold_player_id >= 0)
     {
-        armada_ui_logf(CLR_YELLOW CLR_BOLD "[%s] ⚠ WARNING:" CLR_RESET " Player %d has crossed 900 stars!",
-                       ctx->player_name,
-                       payload->threshold_player_id);
+        int thresh_id = payload->threshold_player_id;
+        const char *thresh_clr = get_player_color(thresh_id);
+        const char *thresh_name = get_player_name_by_id(ctx, thresh_id);
+        armada_ui_logf(CLR_YELLOW CLR_BOLD "⚠ WARNING:" CLR_RESET " %s[P%d %s]" CLR_RESET " has crossed 900 stars!",
+                       thresh_clr, thresh_id, thresh_name);
     }
 }
 
@@ -1374,9 +1491,11 @@ extern "C" void client_on_threshold(ClientContext *ctx, const EventPayload_Thres
 {
     if (!payload)
         return;
-    armada_ui_logf(CLR_YELLOW CLR_BOLD "[%s] ⚠ ALERT:" CLR_RESET " Player %d crossed " CLR_BOLD "%d" CLR_RESET " stars!",
-                   ctx->player_name,
-                   payload->player_id,
+    int player_id = payload->player_id;
+    const char *player_clr = get_player_color(player_id);
+    const char *player_name = get_player_name_by_id(ctx, player_id);
+    armada_ui_logf(CLR_YELLOW CLR_BOLD "⚠ ALERT:" CLR_RESET " %s[P%d %s]" CLR_RESET " crossed " CLR_BOLD "%d" CLR_RESET " stars!",
+                   player_clr, player_id, player_name,
                    payload->threshold);
 }
 
@@ -1385,27 +1504,35 @@ extern "C" void client_on_action_sent(ClientContext *ctx, UserActionType type, i
     (void)value;
     (void)metadata;
     const char *action_name = get_action_name(type);
+    const char *self_clr = get_player_color(ctx->player_id);
     if (type == USER_ACTION_ATTACK_PLANET)
     {
-        armada_ui_logf(CLR_CYAN "[%s]" CLR_RESET " Sending action: " CLR_BOLD "%s" CLR_RESET " → Player %d",
-                       ctx->player_name, action_name, target_player_id);
+        const char *target_clr = get_player_color(target_player_id);
+        const char *target_name = get_player_name_by_id(ctx, target_player_id);
+        armada_ui_logf("%s[P%d %s]" CLR_RESET " Sending action: " CLR_BOLD "%s" CLR_RESET " → %s[P%d %s]" CLR_RESET,
+                       self_clr, ctx->player_id, ctx->player_name,
+                       action_name,
+                       target_clr, target_player_id, target_name);
     }
     else
     {
-        armada_ui_logf(CLR_CYAN "[%s]" CLR_RESET " Sending action: " CLR_BOLD "%s" CLR_RESET,
-                       ctx->player_name, action_name);
+        armada_ui_logf("%s[P%d %s]" CLR_RESET " Sending action: " CLR_BOLD "%s" CLR_RESET,
+                       self_clr, ctx->player_id, ctx->player_name, action_name);
     }
 }
 
 extern "C" void client_on_game_over(ClientContext *ctx, int winner_id)
 {
+    const char *winner_clr = get_player_color(winner_id);
+    const char *winner_name = get_player_name_by_id(ctx, winner_id);
+
     armada_ui_logf(CLR_MAGENTA CLR_BOLD "=== GAME OVER ===" CLR_RESET);
     if (winner_id == ctx->player_id)
     {
-        armada_ui_logf(CLR_GREEN CLR_BOLD "[%s] 🎉 YOU WIN! 🎉" CLR_RESET, ctx->player_name);
+        armada_ui_logf("%s" CLR_BOLD "[P%d %s] 🎉 YOU WIN! 🎉" CLR_RESET, winner_clr, winner_id, winner_name);
     }
     else
     {
-        armada_ui_logf(CLR_RED "[%s]" CLR_RESET " Player %d wins!", ctx->player_name, winner_id);
+        armada_ui_logf("%s[P%d %s]" CLR_RESET " wins!", winner_clr, winner_id, winner_name);
     }
 }
