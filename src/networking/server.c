@@ -494,7 +494,6 @@ static void server_handle_user_action(ServerContext *ctx, const EventPayload_Use
 
     int emit_threshold = 0;
     int threshold_player_id = -1;
-    int conclude_game = 0;
     int winner_id = -1;
     char game_over_reason[64] = {0};
 
@@ -548,16 +547,16 @@ static void server_handle_user_action(ServerContext *ctx, const EventPayload_Use
 
     // Check for star goal ONLY when ending turn
     // This allows players to gain >1000 stars at start of turn but spend to stay below
-    if (!conclude_game && payload->action_type == USER_ACTION_END_TURN && player->stars >= STAR_GOAL)
+    if (player->stars >= STAR_GOAL)
     {
-        conclude_game = 1;
+
         winner_id = player_id;
         strncpy(game_over_reason, "Star goal reached", sizeof(game_over_reason) - 1);
     }
 
     pthread_mutex_unlock(&ctx->state_mutex);
 
-    if (conclude_game)
+    if (winner_id != -1)
     {
         GameEvent over_event;
         memset(&over_event, 0, sizeof(GameEvent));
@@ -1078,24 +1077,10 @@ static void server_advance_turn(ServerContext *ctx, const EventPayload_UserActio
     }
 
     // Add planet income to the player whose turn is starting
-    // Income = base_income * (current_health / max_health)
     PlayerState *next_player_state = server_get_player(ctx, next_player);
     if (next_player_state && next_player_state->is_active)
     {
-        PlanetStats *planet = &next_player_state->planet;
-        if (planet->max_health > 0)
-        {
-            // Calculate health ratio (scaled 0.0 to 1.0)
-            double health_ratio = (double)planet->current_health / (double)planet->max_health;
-            // Clamp to [0, 1]
-            if (health_ratio < 0.0)
-                health_ratio = 0.0;
-            if (health_ratio > 1.0)
-                health_ratio = 1.0;
-            // Calculate income: base_income * health_ratio
-            int income = (int)(planet->base_income * health_ratio);
-            next_player_state->stars += income;
-        }
+        next_player_state->stars += next_player_state->planet.base_income;
     }
 
     ctx->game_state.turn.current_player_id = next_player;

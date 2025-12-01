@@ -467,12 +467,12 @@ namespace
             return Container::Horizontal({disconnect_btn, start_match_btn});
         }
 
-        void show_attack_dialog(const std::vector<int>& planet_ids)
+        void show_attack_dialog(const std::vector<int> &planet_ids)
         {
             if (!planet_ids.empty())
             {
-            attack_dialog_open = true;
-            selected_target_id = planet_ids[0];  // pick the first planet
+                attack_dialog_open = true;
+                selected_target_id = planet_ids[0]; // pick the first planet
             }
         }
 
@@ -517,44 +517,40 @@ namespace
         bool attack_dialog_open = false;
         int selected_target_id = -1;
 
-
         Component build_attack_dialog()
         {
-            auto close_attack_dialog = [&] {
+            auto close_attack_dialog = [&]
+            {
                 attack_dialog_open = false;
                 selected_target_id = -1;
             };
 
-            auto confirm_btn = StyledButton("Confirm Attack", [&] {
+            auto confirm_btn = StyledButton("Confirm Attack", [&]
+                                            {
                 client_send_action( client_.get(),USER_ACTION_ATTACK_PLANET,selected_target_id,0,0);
-                close_attack_dialog();
-            }, [&] {
-                return selected_target_id != -1;  // only enabled if a target is selected
-            });
-            auto cancel_btn = StyledButton("Cancel", [&] {
-                close_attack_dialog();}, []
-                { return true;  // always enabled
-            });
+                close_attack_dialog(); }, [&]
+                                            {
+                                                return selected_target_id != -1; // only enabled if a target is selected
+                                            });
+            auto cancel_btn = StyledButton("Cancel", [&]
+                                           { close_attack_dialog(); }, []
+                                           {
+                                               return true; // always enabled
+                                           });
 
-            return Renderer(Container::Vertical({
-                confirm_btn,
-                cancel_btn
-            }), [&] {
-                return vbox({
-                    text("Select Attack Confirmation") | bold,
-                    separator(),
-                    text("Are you sure you want to attack this planet?") | dim,
-                    separator(),
-                    hbox({
-                        confirm_btn->Render() | border,
-                        ftxui::filler(),
-                        cancel_btn->Render() | border
-                    })
-                }) | border | bgcolor(Color::Black)
-                | size(WIDTH, GREATER_THAN, 40)
-                | size(HEIGHT, GREATER_THAN, 10);
-            });
-            
+            return Renderer(Container::Vertical({confirm_btn,
+                                                 cancel_btn}),
+                            [&]
+                            {
+                                return vbox({text("Select Attack Confirmation") | bold,
+                                             separator(),
+                                             text("Are you sure you want to attack this planet?") | dim,
+                                             separator(),
+                                             hbox({confirm_btn->Render() | border,
+                                                   ftxui::filler(),
+                                                   cancel_btn->Render() | border})}) |
+                                       border | bgcolor(Color::Black) | size(WIDTH, GREATER_THAN, 40) | size(HEIGHT, GREATER_THAN, 10);
+                            });
         }
 
         /*
@@ -569,14 +565,15 @@ namespace
 
             return base; */
 
-
         std::string hp_hearts(int coarse_health)
         {
             // coarse_health will be one of: 0, 25, 50, 75, 100
             int filled = coarse_health / 25; // gives 0..4
 
-            if (filled < 0) filled = 0;
-            if (filled > 4) filled = 4;
+            if (filled < 0)
+                filled = 0;
+            if (filled > 4)
+                filled = 4;
 
             std::string result;
             for (int i = 0; i < filled; i++)
@@ -591,21 +588,20 @@ namespace
         {
             std::vector<Element> player_blocks;
 
-            for (const auto& p : client_->player_game_state.entries) 
+            for (const auto &p : client_->player_game_state.entries)
             {
 
                 // skip myself completely
                 if (p.player_id == client_->player_id)
-                continue;
+                    continue;
 
                 std::vector<Element> lines;
 
                 lines.push_back(text("👾 P" + std::to_string(p.player_id) + " " + p.name) | bold);
                 lines.push_back(
-                text("SL:" + std::to_string(p.ship_level) +
-                "   PL:" + std::to_string(p.planet_level)));
+                    text("SL:" + std::to_string(p.ship_level) +
+                         "   PL:" + std::to_string(p.planet_level)));
                 lines.push_back(text("🪐 Planet HP: " + hp_hearts(p.coarse_planet_health)));
-                
 
                 auto block = vbox(lines) | border | size(WIDTH, GREATER_THAN, 22);
                 player_blocks.push_back(block);
@@ -615,28 +611,28 @@ namespace
             return hbox(player_blocks);
         }
 
-
         Element render_self_info()
         {
             // TODO: Implement self info display
-           
 
-                    if (!client_ || !client_->connected) return vbox();
+            if (!client_ || !client_->connected)
+                return vbox();
 
-                    const auto& me = client_->player_game_state.entries[client_->player_id];
+            const auto &me = client_->player_game_state.self;
 
-                    std::vector<Element> lines;
+            std::vector<Element> lines;
 
-                    lines.push_back(text("🧑‍🚀 " + p.name + " \n⭐ " + std::to_string(p.stars)) | bold);
-                    lines.push_back(text("SL:" + std::to_string(me.ship_level) +
-                                        "\nPL:" + std::to_string(me.planet_level)));
-                    lines.push_back(text("🪐 Planet HP: " + hp_hearts(me.coarse_planet_health)));
+            int percentage_health = 0;
+            if (me.planet.max_health > 0)
+                percentage_health = (me.planet.current_health * 100) / me.planet.max_health;
 
-                    // Wrap in vertical box with border and fixed width for left-half style
-                    return vbox(lines) | border | size(WIDTH, GREATER_THAN, 22);
+            lines.push_back(text(std::string("🧑‍🚀 ") + me.name + " \n⭐ " + std::to_string(me.stars)) | bold);
+            lines.push_back(text("SL:" + std::to_string(me.ship.level) +
+                                 "\nPL:" + std::to_string(me.planet.level)));
+            lines.push_back(text("🪐 Planet HP: " + std::to_string(percentage_health) + "%"));
 
-
-            
+            // Wrap in vertical box with border and fixed width for left-half style
+            return vbox(lines) | border | size(WIDTH, GREATER_THAN, 22);
         }
 
         Element render_game_logs()
@@ -691,11 +687,10 @@ namespace
                 std::lock_guard<std::mutex> lock(client_mutex_);
                 return !client_ || !client_->match_started; });
 
-            // TODO: Wrap game action buttons similarly
             auto game_controls_visible = game_actions_button | Maybe([&]
                                                                      {
             std::lock_guard<std::mutex> lock(client_mutex_);
-            return client_ && client_->match_started; });
+             return client_ && client_->match_started; });
 
             auto all_controls = Container::Vertical({prematch_visible, game_controls_visible, attack_dialog});
 
@@ -925,7 +920,6 @@ namespace
         }
 
         // GAME ACTIONS
-
         void send_start_request()
         {
             std::lock_guard<std::mutex> lock(client_mutex_);
@@ -1055,7 +1049,6 @@ namespace
         }
 
         // LOGGING
-
         static void log_thunk(const char *line, void *userdata)
         {
             if (!userdata)
