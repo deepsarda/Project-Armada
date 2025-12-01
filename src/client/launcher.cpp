@@ -56,6 +56,99 @@ namespace
     using ftxui::WIDTH;
     using ftxui::window;
 
+    // Parse ANSI color codes and convert to FTXUI elements
+    Element parse_ansi_line(const std::string &line)
+    {
+        std::vector<Element> elements;
+        std::string current_text;
+        Color current_color = Color::Default;
+        bool is_bold = false;
+
+        for (size_t i = 0; i < line.size(); ++i)
+        {
+            // Check for ANSI escape sequence
+            if (line[i] == '\033' && i + 1 < line.size() && line[i + 1] == '[')
+            {
+                // Flush current text with current style
+                if (!current_text.empty())
+                {
+                    Element elem = text(current_text);
+                    if (current_color != Color::Default)
+                        elem = elem | color(current_color);
+                    if (is_bold)
+                        elem = elem | bold;
+                    elements.push_back(elem);
+                    current_text.clear();
+                }
+
+                // Find the end of the escape sequence
+                size_t seq_start = i + 2;
+                size_t seq_end = seq_start;
+                while (seq_end < line.size() && line[seq_end] != 'm')
+                    ++seq_end;
+
+                if (seq_end < line.size())
+                {
+                    std::string code_str = line.substr(seq_start, seq_end - seq_start);
+                    int code = std::atoi(code_str.c_str());
+
+                    switch (code)
+                    {
+                    case 0: // Reset
+                        current_color = Color::Default;
+                        is_bold = false;
+                        break;
+                    case 1: // Bold
+                        is_bold = true;
+                        break;
+                    case 31: // Red
+                        current_color = Color::Red;
+                        break;
+                    case 32: // Green
+                        current_color = Color::Green;
+                        break;
+                    case 33: // Yellow
+                        current_color = Color::Yellow;
+                        break;
+                    case 34: // Blue
+                        current_color = Color::Blue;
+                        break;
+                    case 35: // Magenta
+                        current_color = Color::Magenta;
+                        break;
+                    case 36: // Cyan
+                        current_color = Color::Cyan;
+                        break;
+                    default:
+                        break;
+                    }
+
+                    i = seq_end; // Move past the 'm'
+                }
+            }
+            else
+            {
+                current_text += line[i];
+            }
+        }
+
+        // Flush remaining text
+        if (!current_text.empty())
+        {
+            Element elem = text(current_text);
+            if (current_color != Color::Default)
+                elem = elem | color(current_color);
+            if (is_bold)
+                elem = elem | bold;
+            elements.push_back(elem);
+        }
+
+        if (elements.empty())
+            return text("");
+
+        return hbox(elements);
+    }
+
     // HELPER FUNCTIONS
     // Create a styled button that appears disabled when condition is false
     Component StyledButton(const std::string &label, std::function<void()> on_click, std::function<bool()> is_enabled)
@@ -250,15 +343,15 @@ namespace
 
         Element render_server_logs()
         {
-            std::string server_log_text;
+            std::vector<Element> log_elements;
             {
                 std::lock_guard<std::mutex> lock(server_log_mutex_);
-                std::ostringstream oss;
                 for (const auto &line : server_logs_)
-                    oss << line << '\n';
-                server_log_text = oss.str();
+                    log_elements.push_back(parse_ansi_line(line));
             }
-            return paragraph(server_log_text.empty() ? std::string{"(No logs yet)"} : server_log_text) | flex;
+            if (log_elements.empty())
+                return text("(No logs yet)") | flex;
+            return vbox(log_elements) | flex;
         }
 
         void build_host_tab()
@@ -388,15 +481,15 @@ namespace
 
         Element render_game_logs()
         {
-            std::string log_text;
+            std::vector<Element> log_elements;
             {
                 std::lock_guard<std::mutex> lock(log_mutex_);
-                std::ostringstream oss;
                 for (const auto &line : logs_)
-                    oss << line << '\n';
-                log_text = oss.str();
+                    log_elements.push_back(parse_ansi_line(line));
             }
-            return paragraph(log_text.empty() ? std::string{"Waiting for events..."} : log_text) | flex;
+            if (log_elements.empty())
+                return text("Waiting for events...") | flex;
+            return vbox(log_elements) | flex;
         }
 
         Element render_turn_indicator()
@@ -1015,7 +1108,7 @@ extern "C" void client_on_host_update(ClientContext *ctx, const EventPayload_Hos
                        payload->host_player_id);
         if (ctx && ctx->player_id == payload->host_player_id)
         {
-            armada_ui_logf(CLR_MAGENTA "[%s]" CLR_RESET " " CLR_BOLD "You are now the host!" CLR_RESET " Type 'start' when ready.", ctx->player_name);
+            armada_ui_logf(CLR_MAGENTA "[%s]" CLR_RESET " " CLR_BOLD "You are now the host!" CLR_RESET);
         }
     }
     else

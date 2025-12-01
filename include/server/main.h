@@ -3,6 +3,13 @@
 
 #include "../server/server_api.h"
 
+// Arguments passed to each client thread
+typedef struct
+{
+    ServerContext *ctx;
+    net_socket_t socket_fd;
+} ClientThreadArgs;
+
 // Server callback functions
 int server_on_init(ServerContext *ctx);
 void server_on_initialized(ServerContext *ctx, int max_players);
@@ -17,13 +24,6 @@ void server_on_client_disconnected(ServerContext *ctx, net_socket_t socket_fd);
 void server_on_unhandled_event(ServerContext *ctx, EventType type);
 void server_on_unknown_action(ServerContext *ctx, UserActionType action, int player_id);
 
-// Arguments passed to each client thread
-typedef struct
-{
-    ServerContext *ctx;
-    net_socket_t socket_fd;
-} ClientThreadArgs;
-
 // Thread entry points
 static void *server_accept_thread(void *arg);
 static void *server_client_thread(void *arg);
@@ -34,6 +34,7 @@ static void server_handle_player_join(ServerContext *ctx, net_socket_t sender_so
 static void server_handle_user_action(ServerContext *ctx, const EventPayload_UserAction *payload);
 static void server_handle_match_start_request(ServerContext *ctx, int requester_id);
 static void server_handle_disconnect(ServerContext *ctx, net_socket_t socket_fd);
+void server_on_turn_action(ServerContext *ctx, const EventPayload_UserAction *action);
 
 // Event sending helpers
 static void server_broadcast_event(ServerContext *ctx, const GameEvent *event);

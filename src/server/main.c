@@ -83,3 +83,18 @@ void server_on_unknown_action(ServerContext *ctx, UserActionType action, int pla
     (void)ctx;
     armada_server_logf(SRV_COLOR_RED "[Server] WARNING:" SRV_COLOR_RESET " Unknown action " SRV_COLOR_MAGENTA "%d" SRV_COLOR_RESET " from player " SRV_COLOR_CYAN "%d" SRV_COLOR_RESET ".", action, player_id);
 }
+
+void server_on_turn_action(ServerContext *ctx, const EventPayload_UserAction *action)
+{
+
+    if (action)
+    {
+        // TODO: Enter logic to process the action here
+        armada_server_logf(SRV_COLOR_RED "[Server] WARNING:" SRV_COLOR_RESET " Processing action " SRV_COLOR_MAGENTA "%d" SRV_COLOR_RESET " from player " SRV_COLOR_CYAN "%d" SRV_COLOR_RESET " targeting " SRV_COLOR_CYAN "%d" SRV_COLOR_RESET " (value=%d meta=%d).",
+                           action->action_type,
+                           action->player_id,
+                           action->target_player_id,
+                           action->value,
+                           action->metadata);
+    }
+}

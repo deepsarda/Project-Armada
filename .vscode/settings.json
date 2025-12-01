@@ -6,6 +6,9 @@
         "sstream": "cpp",
         "mutex": "cpp",
         "chrono": "cpp",
-        "net_platform.h": "c"
+        "net_platform.h": "c",
+        "stdio.h": "c",
+        "ui_notifications.h": "c",
+        "main.h": "c"
     }
 }
