@@ -56,13 +56,13 @@ static int server_next_active_player(ServerContext *ctx, int start_after);
 static int server_compute_valid_actions(ServerContext *ctx, int player_id, int current_player_id);
 
 // Cost and stat calculation helpers
-static int server_get_planet_upgrade_cost(int current_level);
-static int server_get_ship_upgrade_cost(int current_level);
-static int server_get_repair_cost(int planet_level);
-static int server_get_planet_base_health(int level);
-static int server_get_planet_base_income(int level);
-static int server_get_ship_base_damage(int level);
-static int server_star_gained_attacker(int level,int damage_dealt,int planet_max_health);
+int server_get_planet_upgrade_cost(int current_level);
+int server_get_ship_upgrade_cost(int current_level);
+int server_get_repair_cost(int planet_level);
+int server_get_planet_base_health(int level);
+int server_get_planet_base_income(int level);
+int server_get_ship_base_damage(int level);
+int server_get_attack_star_gain(int level, int damage_dealt, int planet_max_health);
 
 // Misc helpers
 static void server_emit_host_update(ServerContext *ctx, int host_id, const char *host_name);

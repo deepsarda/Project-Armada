@@ -1,4 +1,4 @@
-# Armada: Multiplayer Strategy Game Documentation
+# Project Armada: Multiplayer Strategy Game Documentation
 
 ## 1. Project Overview
 
