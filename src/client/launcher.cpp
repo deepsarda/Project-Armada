@@ -467,29 +467,176 @@ namespace
             return Container::Horizontal({disconnect_btn, start_match_btn});
         }
 
+        void show_attack_dialog(const std::vector<int>& planet_ids)
+        {
+            if (!planet_ids.empty())
+            {
+            attack_dialog_open = true;
+            selected_target_id = planet_ids[0];  // pick the first planet
+            }
+        }
+
         Component build_game_action_buttons()
         {
             // TODO: Implement game action buttons
-            return Container::Horizontal({});
+            auto attack_btn = StyledButton("⚔ Attack", [&]
+                                           { show_attack_dialog(target_player_ids_); }, [&]
+                                           {
+                std::lock_guard<std::mutex> lock(client_mutex_);
+                return client_ && client_->connected &&
+                   client_->current_turn_player_id == client_->player_id &&
+                   (client_->valid_actions & VALID_ACTION_ATTACK_PLANET); });
+
+            auto repair_btn = StyledButton("🔧 Repair", [&]
+                                           { client_send_action(client_.get(), USER_ACTION_REPAIR_PLANET, -1, 0, 0); }, [&]
+                                           {
+                std::lock_guard<std::mutex> lock(client_mutex_);
+                return client_ && client_->connected &&
+                   client_->current_turn_player_id == client_->player_id &&
+                   (client_->valid_actions & VALID_ACTION_REPAIR_PLANET); });
+
+            auto upgrade_planet_btn = StyledButton("🪐 Upgrade Planet", [&]
+                                                   { client_send_action(client_.get(), USER_ACTION_UPGRADE_PLANET, -1, 0, 0); }, [&]
+                                                   {
+                std::lock_guard<std::mutex> lock(client_mutex_);
+                return client_ && client_->connected &&
+                   client_->current_turn_player_id == client_->player_id &&
+                   (client_->valid_actions & VALID_ACTION_UPGRADE_PLANET); });
+
+            auto upgrade_ship_btn = StyledButton("🚀 Upgrade Ship", [&]
+                                                 { client_send_action(client_.get(), USER_ACTION_UPGRADE_SHIP, -1, 0, 0); }, [&]
+                                                 {
+                std::lock_guard<std::mutex> lock(client_mutex_);
+                return client_ && client_->connected &&
+                   client_->current_turn_player_id == client_->player_id &&
+                   (client_->valid_actions & VALID_ACTION_UPGRADE_SHIP); });
+
+            return Container::Horizontal({attack_btn, repair_btn, upgrade_planet_btn, upgrade_ship_btn});
         }
+
+        bool attack_dialog_open = false;
+        int selected_target_id = -1;
+
 
         Component build_attack_dialog()
         {
-            // TODO: Implement attack dialog
-            return Renderer([]
-                            { return vbox(); });
+            auto close_attack_dialog = [&] {
+                attack_dialog_open = false;
+                selected_target_id = -1;
+            };
+
+            auto confirm_btn = StyledButton("Confirm Attack", [&] {
+                client_send_action( client_.get(),USER_ACTION_ATTACK_PLANET,selected_target_id,0,0);
+                close_attack_dialog();
+            }, [&] {
+                return selected_target_id != -1;  // only enabled if a target is selected
+            });
+            auto cancel_btn = StyledButton("Cancel", [&] {
+                close_attack_dialog();}, []
+                { return true;  // always enabled
+            });
+
+            return Renderer(Container::Vertical({
+                confirm_btn,
+                cancel_btn
+            }), [&] {
+                return vbox({
+                    text("Select Attack Confirmation") | bold,
+                    separator(),
+                    text("Are you sure you want to attack this planet?") | dim,
+                    separator(),
+                    hbox({
+                        confirm_btn->Render() | border,
+                        ftxui::filler(),
+                        cancel_btn->Render() | border
+                    })
+                }) | border | bgcolor(Color::Black)
+                | size(WIDTH, GREATER_THAN, 40)
+                | size(HEIGHT, GREATER_THAN, 10);
+            });
+            
+        }
+
+        /*
+            Element base = main_ui->Render();
+
+            if (attack_dialog_open) {
+                base = dbox({
+                    base,
+                    build_attack_dialog()->Render()
+                });
+            }
+
+            return base; */
+
+
+        std::string hp_hearts(int coarse_health)
+        {
+            // coarse_health will be one of: 0, 25, 50, 75, 100
+            int filled = coarse_health / 25; // gives 0..4
+
+            if (filled < 0) filled = 0;
+            if (filled > 4) filled = 4;
+
+            std::string result;
+            for (int i = 0; i < filled; i++)
+                result += "❤️";
+            for (int i = filled; i < 4; i++)
+                result += "💀";
+
+            return result;
         }
 
         Element render_other_players()
         {
-            // TODO: Implement detailed player list
-            return vbox();
+            std::vector<Element> player_blocks;
+
+            for (const auto& p : client_->player_game_state.entries) 
+            {
+
+                // skip myself completely
+                if (p.player_id == client_->player_id)
+                continue;
+
+                std::vector<Element> lines;
+
+                lines.push_back(text("👾 P" + std::to_string(p.player_id) + " " + p.name) | bold);
+                lines.push_back(
+                text("SL:" + std::to_string(p.ship_level) +
+                "   PL:" + std::to_string(p.planet_level)));
+                lines.push_back(text("🪐 Planet HP: " + hp_hearts(p.coarse_planet_health)));
+                
+
+                auto block = vbox(lines) | border | size(WIDTH, GREATER_THAN, 22);
+                player_blocks.push_back(block);
+            }
+
+            // return the row of player boxes
+            return hbox(player_blocks);
         }
+
 
         Element render_self_info()
         {
             // TODO: Implement self info display
-            return vbox();
+           
+
+                    if (!client_ || !client_->connected) return vbox();
+
+                    const auto& me = client_->player_game_state.entries[client_->player_id];
+
+                    std::vector<Element> lines;
+
+                    lines.push_back(text("🧑‍🚀 " + p.name + " \n⭐ " + std::to_string(p.stars)) | bold);
+                    lines.push_back(text("SL:" + std::to_string(me.ship_level) +
+                                        "\nPL:" + std::to_string(me.planet_level)));
+                    lines.push_back(text("🪐 Planet HP: " + hp_hearts(me.coarse_planet_health)));
+
+                    // Wrap in vertical box with border and fixed width for left-half style
+                    return vbox(lines) | border | size(WIDTH, GREATER_THAN, 22);
+
+
+            
         }
 
         Element render_game_logs()
@@ -534,6 +681,7 @@ namespace
         void build_session_view()
         {
             auto prematch_controls = build_prematch_controls();
+            auto game_actions_button = build_game_action_buttons();
             // TODO: Add game action buttons here
             auto attack_dialog = build_attack_dialog();
 
@@ -542,8 +690,14 @@ namespace
                                                               {
                 std::lock_guard<std::mutex> lock(client_mutex_);
                 return !client_ || !client_->match_started; });
+
             // TODO: Wrap game action buttons similarly
-            auto all_controls = Container::Vertical({prematch_visible, attack_dialog});
+            auto game_controls_visible = game_actions_button | Maybe([&]
+                                                                     {
+            std::lock_guard<std::mutex> lock(client_mutex_);
+            return client_ && client_->match_started; });
+
+            auto all_controls = Container::Vertical({prematch_visible, game_controls_visible, attack_dialog});
 
             session_component_ = Renderer(all_controls, [this, all_controls]
                                           {
