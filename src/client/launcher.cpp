@@ -198,13 +198,26 @@ namespace
             std::vector<std::string> tab_names = {"Host", "Play"};
             auto tab_menu = Menu(&tab_names, &main_tab_index_);
 
+            auto quit_btn = SimpleButton("Quit", [&]
+                                         {
+                stop_client_session();
+                stop_join_scan();
+                stop_local_server();
+                if (screen_) screen_->Exit(); });
+
             auto tab_content = Container::Tab({host_component_, play_component_}, &main_tab_index_);
 
-            auto main_container = Container::Horizontal({tab_menu, tab_content});
+            auto left_panel = Container::Vertical({tab_menu, quit_btn});
+            auto main_container = Container::Horizontal({left_panel, tab_content});
 
-            auto root = Renderer(main_container, [&]
+            auto root = Renderer(main_container, [&, quit_btn]
                                  {
-                auto tab_element = tab_menu->Render() | border;
+                auto tab_element = vbox({
+                    tab_menu->Render(),
+                    ftxui::filler(),
+                    separator(),
+                    quit_btn->Render(),
+                }) | border;
                 auto content_element = tab_content->Render() | flex | border;
                 return hbox({
                     tab_element | size(WIDTH, ftxui::EQUAL, 12),
@@ -997,7 +1010,6 @@ extern "C" int armada_tui_run(void)
 
 // CLIENT CALLBACKS
 // These functions are called from the C networking layer (client.c)
-
 // ANSI color codes for client logging
 #define CLR_RESET "\033[0m"
 #define CLR_GREEN "\033[32m"

@@ -273,6 +273,36 @@ static void *server_accept_thread(void *arg)
 
     while (ctx->running)
     {
+        // Use select with timeout to allow clean shutdown on all platforms
+        fd_set readfds;
+        FD_ZERO(&readfds);
+        FD_SET(ctx->server_socket, &readfds);
+
+        struct timeval tv;
+        tv.tv_sec = 0;
+        tv.tv_usec = 500000; // 500ms timeout
+
+#if defined(_WIN32)
+        int ready = select(0, &readfds, NULL, NULL, &tv);
+#else
+        int ready = select((int)(ctx->server_socket + 1), &readfds, NULL, NULL, &tv);
+#endif
+        if (ready < 0)
+        {
+            int last_error = NET_ERRNO();
+            if (last_error == NET_EINTR)
+                continue;
+            if (!ctx->running)
+                break;
+            net_log_socket_error("select");
+            break;
+        }
+        if (ready == 0)
+        {
+            // Timeout - check if we should still be running
+            continue;
+        }
+
         addrlen = sizeof(address);
         net_socket_t new_socket = accept(ctx->server_socket, (struct sockaddr *)&address, &addrlen);
         if (new_socket == NET_INVALID_SOCKET)

@@ -33,22 +33,9 @@ static int net_ensure_platform_initialized(void)
     atexit(net_platform_cleanup);
     return 0;
 }
-
-static int net_set_blocking(net_socket_t sock, int should_block)
-{
-    u_long mode = should_block ? 0UL : 1UL;
-    return ioctlsocket(sock, FIONBIO, &mode);
-}
 #else
 static int net_ensure_platform_initialized(void)
 {
-    return 0;
-}
-
-static int net_set_blocking(net_socket_t sock, int should_block)
-{
-    (void)sock;
-    (void)should_block;
     return 0;
 }
 #endif
@@ -218,34 +205,41 @@ int net_receive_event_flags(net_socket_t sock, GameEvent *event, int flags)
 {
     if (sock == NET_INVALID_SOCKET || !event)
         return -1;
-#if defined(_WIN32)
+
     int wants_nonblock = (flags & NET_MSG_DONTWAIT) != 0;
-    int recv_flags = flags & ~NET_MSG_DONTWAIT;
-    int toggled = 0;
+
+    // Use select() for non-blocking check on all platforms for consistency
     if (wants_nonblock)
     {
-        if (net_set_blocking(sock, 0) != 0)
-        {
-            net_log_socket_error("ioctlsocket");
-            return -1;
-        }
-        toggled = 1;
-    }
-#else
-    int recv_flags = flags;
-#endif
+        fd_set readfds;
+        FD_ZERO(&readfds);
+        FD_SET(sock, &readfds);
 
-    ssize_t valread = recv(sock, (char *)event, sizeof(GameEvent), recv_flags);
+        struct timeval tv;
+        tv.tv_sec = 0;
+        tv.tv_usec = 0; // Zero timeout = poll
 
 #if defined(_WIN32)
-    if (toggled)
-    {
-        if (net_set_blocking(sock, 1) != 0)
+        int ready = select(0, &readfds, NULL, NULL, &tv);
+#else
+        int ready = select((int)(sock + 1), &readfds, NULL, NULL, &tv);
+#endif
+        if (ready < 0)
         {
-            net_log_socket_error("ioctlsocket");
+            int last_error = NET_ERRNO();
+            if (last_error == NET_EINTR)
+                return 0;
+            net_log_socket_error("select");
+            return -1;
+        }
+        if (ready == 0)
+        {
+            return 0; // No data available
         }
     }
-#endif
+
+    // Now do a blocking recv - we know data is available if non-blocking was requested
+    ssize_t valread = recv(sock, (char *)event, sizeof(GameEvent), 0);
 
     if (valread == 0)
     {
