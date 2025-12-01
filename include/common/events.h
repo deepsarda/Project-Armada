@@ -71,7 +71,8 @@ typedef struct
     int next_player_id;
     int turn_number;
     int is_match_start;
-    int valid_actions; // Bitmask of valid actions for the receiving player
+    int valid_actions;       // Bitmask of valid actions for the receiving player
+    int threshold_player_id; // Player who crossed threshold this turn, -1 if none otherwise
     EventPayload_UserAction last_action;
     PlayerGameState game;
 } EventPayload_TurnInfo;

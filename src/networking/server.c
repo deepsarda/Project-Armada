@@ -7,56 +7,6 @@
 #include <string.h>
 #include <time.h>
 
-// Arguments passed to each client thread
-typedef struct
-{
-    ServerContext *ctx;
-    net_socket_t socket_fd;
-} ClientThreadArgs;
-
-// Thread entry points
-static void *server_accept_thread(void *arg);
-static void *server_client_thread(void *arg);
-
-// Event handlers
-static void server_handle_event(ServerContext *ctx, const GameEvent *event);
-static void server_handle_player_join(ServerContext *ctx, net_socket_t sender_socket, const EventPayload_PlayerJoin *payload);
-static void server_handle_user_action(ServerContext *ctx, const EventPayload_UserAction *payload);
-static void server_handle_match_start_request(ServerContext *ctx, int requester_id);
-static void server_handle_disconnect(ServerContext *ctx, net_socket_t socket_fd);
-
-// Event sending helpers
-static void server_broadcast_event(ServerContext *ctx, const GameEvent *event);
-static void server_send_event_to(ServerContext *ctx, int player_id, const GameEvent *event);
-static void server_broadcast_current_turn(ServerContext *ctx, int is_match_start, const EventPayload_UserAction *last_action);
-
-// Player management helpers
-static PlayerState *server_get_player(ServerContext *ctx, int player_id);
-static int server_find_open_slot(ServerContext *ctx);
-static int server_find_player_by_socket(ServerContext *ctx, net_socket_t socket_fd);
-static void server_reset_player(PlayerState *player, int player_id, const char *name);
-static void server_refresh_player_count(ServerContext *ctx);
-
-// Game state helpers
-static void server_start_match(ServerContext *ctx);
-static void server_emit_turn_event(ServerContext *ctx, EventType type, int turn_number, int current_id, int next_id, int is_match_start, const EventPayload_UserAction *last_action);
-static void server_advance_turn(ServerContext *ctx, const EventPayload_UserAction *last_action);
-static int server_next_active_player(ServerContext *ctx, int start_after);
-static int server_compute_valid_actions(ServerContext *ctx, int player_id, int current_player_id);
-
-// Misc helpers
-static void server_emit_threshold_event(ServerContext *ctx, int player_id);
-static void server_emit_host_update(ServerContext *ctx, int host_id, const char *host_name);
-static int server_collect_active_players(ServerContext *ctx, int *out_ids, int max_ids);
-static int server_build_player_snapshot(ServerContext *ctx, int viewer_id, PlayerGameState *out_state);
-static int to_coarse_percent(int current, int max);
-static int clamp_int(int value, int min, int max);
-static int server_select_host_locked(ServerContext *ctx);
-static void server_send_error_event(ServerContext *ctx, int player_id, int error_code, const char *message);
-static int server_start_discovery_service(ServerContext *ctx);
-static void server_stop_discovery_service(ServerContext *ctx);
-static void *server_discovery_thread(void *arg);
-
 // Create a new server context
 ServerContext *server_create()
 {
@@ -378,7 +328,7 @@ static void *server_client_thread(void *arg)
             continue;
         }
 
-        server_handle_event(ctx, &event);
+        server_handle_event(ctx, sock, &event);
     }
 
     // Cleanup
@@ -391,21 +341,32 @@ static void *server_client_thread(void *arg)
 }
 
 // Dispatch incoming events to appropriate handlers
-static void server_handle_event(ServerContext *ctx, const GameEvent *event)
+static void server_handle_event(ServerContext *ctx, net_socket_t sender_socket, const GameEvent *event)
 {
     if (!event)
         return;
 
-    switch (event->type)
+    // Look up the actual player ID from the socket to prevent spoofing
+    pthread_mutex_lock(&ctx->state_mutex);
+    int verified_player_id = server_find_player_by_socket(ctx, sender_socket);
+    pthread_mutex_unlock(&ctx->state_mutex);
+
+    // Create a mutable copy of the event with verified sender_id
+    GameEvent verified_event = *event;
+    verified_event.sender_id = verified_player_id;
+
+    switch (verified_event.type)
     {
     case EVENT_USER_ACTION:
-        server_handle_user_action(ctx, &event->data.action);
+        // Override player_id in action payload with verified ID
+        verified_event.data.action.player_id = verified_player_id;
+        server_handle_user_action(ctx, &verified_event.data.action);
         break;
     case EVENT_MATCH_START_REQUEST:
-        server_handle_match_start_request(ctx, event->sender_id);
+        server_handle_match_start_request(ctx, verified_player_id);
         break;
     default:
-        server_on_unhandled_event(ctx, event->type);
+        server_on_unhandled_event(ctx, verified_event.type);
         break;
     }
 }
@@ -492,10 +453,13 @@ static void server_handle_user_action(ServerContext *ctx, const EventPayload_Use
     if (!payload)
         return;
 
-    ServerActionResult action_result;
-    memset(&action_result, 0, sizeof(ServerActionResult));
-    action_result.applied_action = *payload;
-    action_result.winner_id = -1;
+    // Player ID has already been verified by server_handle_event
+    int player_id = payload->player_id;
+    if (player_id < 0 || player_id >= MAX_PLAYERS)
+        return;
+
+    // Copy action for modification
+    EventPayload_UserAction applied_action = *payload;
 
     int emit_threshold = 0;
     int threshold_player_id = -1;
@@ -506,20 +470,20 @@ static void server_handle_user_action(ServerContext *ctx, const EventPayload_Use
     pthread_mutex_lock(&ctx->state_mutex);
 
     // Validate turn and player
-    if (!ctx->game_state.match_started || ctx->game_state.turn.current_player_id != payload->player_id)
+    if (!ctx->game_state.match_started || ctx->game_state.turn.current_player_id != player_id)
     {
         pthread_mutex_unlock(&ctx->state_mutex);
         return;
     }
 
-    PlayerState *player = server_get_player(ctx, payload->player_id);
+    PlayerState *player = server_get_player(ctx, player_id);
     if (!player || !player->is_active)
     {
         pthread_mutex_unlock(&ctx->state_mutex);
         return;
     }
 
-    // Apply action
+    // Apply action based on type
     switch (payload->action_type)
     {
     case USER_ACTION_NONE:
@@ -530,49 +494,38 @@ static void server_handle_user_action(ServerContext *ctx, const EventPayload_Use
     case USER_ACTION_UPGRADE_SHIP:
     case USER_ACTION_REPAIR_PLANET:
     case USER_ACTION_ATTACK_PLANET:
-        server_on_turn_action(ctx, payload, &action_result);
+        server_on_turn_action(ctx, payload);
         break;
     default:
         server_on_unknown_action(ctx, payload->action_type, payload->player_id);
         break;
     }
 
-    // Check for game over
-    if (action_result.game_over)
+    // Reset threshold if player's stars fall below warning threshold
+    if (player->stars < STAR_WARNING_THRESHOLD && player->has_crossed_threshold)
     {
-        conclude_game = 1;
-        winner_id = action_result.winner_id;
-        if (action_result.reason[0])
-        {
-            strncpy(game_over_reason, action_result.reason, sizeof(game_over_reason) - 1);
-        }
+        player->has_crossed_threshold = 0;
     }
 
-    // Check for star goal
-    if (!conclude_game && player->stars >= STAR_GOAL)
-    {
-        conclude_game = 1;
-        winner_id = player->player_id;
-        strncpy(game_over_reason, "Star goal reached", sizeof(game_over_reason) - 1);
-    }
-
-    // Check for star threshold warning
+    // Check for star threshold warning (only if above threshold and not already crossed)
     if (player->stars >= STAR_WARNING_THRESHOLD && !player->has_crossed_threshold)
     {
         player->has_crossed_threshold = 1;
         emit_threshold = 1;
-        threshold_player_id = player->player_id;
+        threshold_player_id = player_id;
+    }
+
+    // Check for star goal ONLY when ending turn
+    // This allows players to gain >1000 stars at start of turn but spend to stay below
+    if (!conclude_game && payload->action_type == USER_ACTION_END_TURN && player->stars >= STAR_GOAL)
+    {
+        conclude_game = 1;
+        winner_id = player_id;
+        strncpy(game_over_reason, "Star goal reached", sizeof(game_over_reason) - 1);
     }
 
     pthread_mutex_unlock(&ctx->state_mutex);
 
-    // TODO: Loop into turn update
-    if (emit_threshold)
-    {
-        server_emit_threshold_event(ctx, threshold_player_id);
-    }
-
-    // TODO: Fix... For deep
     if (conclude_game)
     {
         GameEvent over_event;
@@ -596,8 +549,11 @@ static void server_handle_user_action(ServerContext *ctx, const EventPayload_Use
         return;
     }
 
+    // Store threshold info for the turn event in applied_action metadata
+    applied_action.metadata = emit_threshold ? threshold_player_id : -1;
+
     // Advance to next turn
-    server_advance_turn(ctx, &action_result.applied_action);
+    server_advance_turn(ctx, &applied_action);
 }
 
 // Handle match start requests
@@ -973,29 +929,39 @@ static int server_compute_valid_actions(ServerContext *ctx, int player_id, int c
         }
     }
 
-    // Repair planet: valid if planet is damaged
+    // Repair planet: valid if planet is damaged and player can afford it
     if (player->planet.current_health < player->planet.max_health)
     {
-        valid |= VALID_ACTION_REPAIR_PLANET;
+        int repair_cost = server_get_repair_cost(player->planet.level);
+        if (player->stars >= repair_cost)
+        {
+            valid |= VALID_ACTION_REPAIR_PLANET;
+        }
     }
 
-    // Upgrade planet: always valid if player has stars. TODO: Calculate cost
-    if (player->stars > 0)
+    // Upgrade planet: valid if player can afford it
     {
-        valid |= VALID_ACTION_UPGRADE_PLANET;
+        int planet_upgrade_cost = server_get_planet_upgrade_cost(player->planet.level);
+        if (player->stars >= planet_upgrade_cost)
+        {
+            valid |= VALID_ACTION_UPGRADE_PLANET;
+        }
     }
 
-    // Upgrade ship: always valid if player has stars. TODO: Calculate cost
-    if (player->stars > 0)
+    // Upgrade ship: valid if player can afford it
     {
-        valid |= VALID_ACTION_UPGRADE_SHIP;
+        int ship_upgrade_cost = server_get_ship_upgrade_cost(player->ship.level);
+        if (player->stars >= ship_upgrade_cost)
+        {
+            valid |= VALID_ACTION_UPGRADE_SHIP;
+        }
     }
 
     return valid;
 }
 
 // Emit a turn event to all players
-static void server_emit_turn_event(ServerContext *ctx, EventType type, int turn_number, int current_id, int next_id, int is_match_start, const EventPayload_UserAction *last_action)
+static void server_emit_turn_event(ServerContext *ctx, EventType type, int turn_number, int current_id, int next_id, int is_match_start, const EventPayload_UserAction *last_action, int threshold_player_id)
 {
     int viewers[MAX_PLAYERS];
     int viewer_count = server_collect_active_players(ctx, viewers, MAX_PLAYERS);
@@ -1028,6 +994,7 @@ static void server_emit_turn_event(ServerContext *ctx, EventType type, int turn_
         event.data.turn.turn_number = turn_number;
         event.data.turn.is_match_start = is_match_start;
         event.data.turn.valid_actions = valid_actions;
+        event.data.turn.threshold_player_id = threshold_player_id;
         event.data.turn.last_action = *action_payload;
         event.data.turn.game = snapshot;
 
@@ -1054,12 +1021,15 @@ static void server_broadcast_current_turn(ServerContext *ctx, int is_match_start
     int next_id = server_next_active_player(ctx, current_id);
     pthread_mutex_unlock(&ctx->state_mutex);
 
-    server_emit_turn_event(ctx, EVENT_TURN_STARTED, turn_number, current_id, next_id, is_match_start, last_action);
+    server_emit_turn_event(ctx, EVENT_TURN_STARTED, turn_number, current_id, next_id, is_match_start, last_action, -1);
 }
 
 // Advance to the next player's turn
 static void server_advance_turn(ServerContext *ctx, const EventPayload_UserAction *last_action)
 {
+    // Extract threshold player id from last_action metadata (set by server_handle_user_action)
+    int threshold_player_id = (last_action && last_action->metadata >= 0) ? last_action->metadata : -1;
+
     pthread_mutex_lock(&ctx->state_mutex);
     if (!ctx->game_state.match_started)
     {
@@ -1101,7 +1071,7 @@ static void server_advance_turn(ServerContext *ctx, const EventPayload_UserActio
     int turn_number = ctx->game_state.turn.turn_number;
     int following = server_next_active_player(ctx, current_turn);
     pthread_mutex_unlock(&ctx->state_mutex);
-    server_emit_turn_event(ctx, EVENT_TURN_STARTED, turn_number, current_turn, following, 0, last_action);
+    server_emit_turn_event(ctx, EVENT_TURN_STARTED, turn_number, current_turn, following, 0, last_action, threshold_player_id);
 }
 
 // Find the next active player after a given player
@@ -1123,18 +1093,6 @@ static int server_next_active_player(ServerContext *ctx, int start_after)
         }
     }
     return -1;
-}
-
-// Emit a star threshold event
-static void server_emit_threshold_event(ServerContext *ctx, int player_id)
-{
-    GameEvent threshold;
-    memset(&threshold, 0, sizeof(GameEvent));
-    threshold.type = EVENT_STAR_THRESHOLD_REACHED;
-    threshold.timestamp = time(NULL);
-    threshold.data.threshold.player_id = player_id;
-    threshold.data.threshold.threshold = STAR_WARNING_THRESHOLD;
-    server_broadcast_event(ctx, &threshold);
 }
 
 // Emit host update event
@@ -1206,30 +1164,66 @@ static int server_select_host_locked(ServerContext *ctx)
     return -1;
 }
 
-// Convert health to coarse percent (25/50/75/100).
-// TODO: Deep: make this damage not health
+// Convert health to coarse percent (0/25/50/75/100).
+// 100% for 76-100%, 75% for 51-75%, 50% for 26-50%, 25% for 1-25%, 0% for 0%
 static int to_coarse_percent(int current, int max)
 {
-    if (max <= 0)
+    if (max <= 0 || current <= 0)
         return 0;
     int pct = (current * 100) / max;
-    if (pct <= 0)
-        return 0;
-    if (pct <= 25)
-        return 25;
-    if (pct <= 50)
-        return 50;
-    if (pct <= 75)
+    if (pct >= 76)
+        return 100;
+    if (pct >= 51)
         return 75;
-    return 100;
+    if (pct >= 26)
+        return 50;
+    return 25;
 }
 
-// Clamp integer value between min and max
-static int clamp_int(int value, int min, int max)
+// Get the cost to upgrade a planet from current_level to current_level + 1
+static int server_get_planet_upgrade_cost(int current_level)
 {
-    if (value < min)
-        return min;
-    if (value > max)
-        return max;
-    return value;
+    // Stub: cost increases with level
+    // Level 1->2: 100, 2->3: 200, 3->4: 300, etc.
+    return current_level * 100;
+}
+
+// Get the cost to upgrade a ship from current_level to current_level + 1
+static int server_get_ship_upgrade_cost(int current_level)
+{
+    // Stub: cost increases with level
+    // Level 1->2: 75, 2->3: 150, 3->4: 225, etc.
+    return current_level * 75;
+}
+
+// Get the cost to repair a planet to full health
+static int server_get_repair_cost(int planet_level)
+{
+    // Stub: repair cost scales with planet level
+    // Level 1: 25, Level 2: 50, Level 3: 75, etc.
+    return planet_level * 25;
+}
+
+// Get the base health for a planet at a given level
+static int server_get_planet_base_health(int level)
+{
+    // Stub: health increases with level
+    // Level 1: 100, Level 2: 150, Level 3: 200, etc.
+    return 100 + (level - 1) * 50;
+}
+
+// Get the base income for a planet at a given level
+static int server_get_planet_base_income(int level)
+{
+    // Stub: income increases with level
+    // Level 1: 25, Level 2: 35, Level 3: 45, etc.
+    return 25 + (level - 1) * 10;
+}
+
+// Get the base damage for a ship at a given level
+static int server_get_ship_base_damage(int level)
+{
+    // Stub: damage increases with level
+    // Level 1: 15, Level 2: 25, Level 3: 35, etc.
+    return 15 + (level - 1) * 10;
 }

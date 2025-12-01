@@ -3,6 +3,15 @@
 #include <stdio.h>
 #include <string.h>
 
+// ANSI color codes for server logging
+#define SRV_COLOR_RESET "\033[0m"
+#define SRV_COLOR_GREEN "\033[32m"
+#define SRV_COLOR_YELLOW "\033[33m"
+#define SRV_COLOR_RED "\033[31m"
+#define SRV_COLOR_CYAN "\033[36m"
+#define SRV_COLOR_MAGENTA "\033[35m"
+#define SRV_COLOR_BOLD "\033[1m"
+
 int server_on_init(ServerContext *ctx)
 {
     (void)ctx;
@@ -12,95 +21,65 @@ int server_on_init(ServerContext *ctx)
 void server_on_initialized(ServerContext *ctx, int max_players)
 {
     (void)ctx;
-    armada_server_logf("[Server] Initialized for up to %d players.", max_players);
+    armada_server_logf(SRV_COLOR_GREEN "[Server]" SRV_COLOR_RESET " Initialized for up to " SRV_COLOR_BOLD "%d" SRV_COLOR_RESET " players.", max_players);
 }
 
 void server_on_starting(ServerContext *ctx, int port)
 {
     (void)ctx;
-    armada_server_logf("[Server] Starting server on port %d...", port);
+    armada_server_logf(SRV_COLOR_CYAN "[Server]" SRV_COLOR_RESET " Starting server on port " SRV_COLOR_BOLD "%d" SRV_COLOR_RESET "...", port);
 }
 
 void server_on_start_failed(ServerContext *ctx, const char *message)
 {
     (void)ctx;
-    armada_server_logf("[Server] Failed to start: %s", message ? message : "unknown error");
+    armada_server_logf(SRV_COLOR_RED "[Server] ERROR:" SRV_COLOR_RESET " Failed to start: %s", message ? message : "unknown error");
 }
 
 void server_on_started(ServerContext *ctx, int port)
 {
     (void)ctx;
-    armada_server_logf("[Server] Server listening on port %d.", port);
+    armada_server_logf(SRV_COLOR_GREEN "[Server]" SRV_COLOR_RESET " Server listening on port " SRV_COLOR_BOLD "%d" SRV_COLOR_RESET ".", port);
 }
 
 void server_on_accept_thread_started(ServerContext *ctx)
 {
     (void)ctx;
-    armada_server_logf("[Server] Accept thread running.");
+    armada_server_logf(SRV_COLOR_GREEN "[Server]" SRV_COLOR_RESET " Accept thread running.");
 }
 
 void server_on_accept_thread_failed(ServerContext *ctx, const char *message)
 {
     (void)ctx;
-    armada_server_logf("[Server] Accept thread failed: %s", message ? message : "unknown error");
+    armada_server_logf(SRV_COLOR_RED "[Server] ERROR:" SRV_COLOR_RESET " Accept thread failed: %s", message ? message : "unknown error");
 }
 
 void server_on_stopping(ServerContext *ctx)
 {
     (void)ctx;
-    armada_server_logf("[Server] Stopping server...");
+    armada_server_logf(SRV_COLOR_YELLOW "[Server]" SRV_COLOR_RESET " Stopping server...");
 }
 
 void server_on_client_connected(ServerContext *ctx, net_socket_t socket_fd)
 {
     (void)ctx;
-    armada_server_logf("[Server] Client connected on socket %llu.", (unsigned long long)socket_fd);
+    armada_server_logf(SRV_COLOR_GREEN "[Server]" SRV_COLOR_RESET " Client connected on socket " SRV_COLOR_CYAN "%llu" SRV_COLOR_RESET ".", (unsigned long long)socket_fd);
 }
 
 void server_on_client_disconnected(ServerContext *ctx, net_socket_t socket_fd)
 {
     (void)ctx;
-    armada_server_logf("[Server] Client disconnected on socket %llu.", (unsigned long long)socket_fd);
+    armada_server_logf(SRV_COLOR_YELLOW "[Server]" SRV_COLOR_RESET " Client disconnected from socket " SRV_COLOR_CYAN "%llu" SRV_COLOR_RESET ".", (unsigned long long)socket_fd);
 }
 
 void server_on_unhandled_event(ServerContext *ctx, EventType type)
 {
     (void)ctx;
-    armada_server_logf("[Server] Unhandled event type %d.", type);
+    armada_server_logf(SRV_COLOR_YELLOW "[Server]" SRV_COLOR_RESET " Unhandled event type " SRV_COLOR_MAGENTA "%d" SRV_COLOR_RESET ".", type);
 }
 
 void server_on_unknown_action(ServerContext *ctx, UserActionType action, int player_id)
 {
     (void)ctx;
-    armada_server_logf("[Server] Unknown action %d from player %d.", action, player_id);
-}
-
-void server_on_turn_action(ServerContext *ctx, const EventPayload_UserAction *action, ServerActionResult *result)
-{
-    (void)ctx;
-    if (!result)
-    {
-        return;
-    }
-
-    if (action)
-    {
-        // TODO: Enter logic to process the action here
-        result->applied_action = *action;
-        armada_server_logf("[Server] Processing action %d from player %d targeting %d (value=%d meta=%d).",
-                           action->action_type,
-                           action->player_id,
-                           action->target_player_id,
-                           action->value,
-                           action->metadata);
-    }
-    else
-    {
-        memset(&result->applied_action, 0, sizeof(result->applied_action));
-    }
-
-    if (result->winner_id >= 0)
-    {
-        result->game_over = 1;
-    }
+    armada_server_logf(SRV_COLOR_RED "[Server] WARNING:" SRV_COLOR_RESET " Unknown action " SRV_COLOR_MAGENTA "%d" SRV_COLOR_RESET " from player " SRV_COLOR_CYAN "%d" SRV_COLOR_RESET ".", action, player_id);
 }

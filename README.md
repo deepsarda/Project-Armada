@@ -112,22 +112,7 @@ Once connected, this view is active.
 
 ---
 
-## 6. Development Guide
-
-### 6.1 Adding a New Action
-1.  **Update Enum:** Add entry to `UserActionType` in `game_types.h`.
-2.  **Update Validation:** Add logic to `server_compute_valid_actions` in `server.c`.
-3.  **Implement Logic:** Add handling logic in `server_on_turn_action` (currently a stub in `main.c` that needs to be expanded to modify `GameState`).
-4.  **UI Binding:** Add a button in `launcher.cpp` that calls `client_send_action` with the new enum.
-
-### 6.2 Visualizing State
-The server sends a `PlayerGameState` snapshot. This structure handles information hiding:
-*   **Self:** You see your exact stats.
-*   **Others:** You see `PlayerPublicInfo`.
-    *   **Stars:** Hidden unless they cross the warning threshold.
-    *   **Health:** Coarse percentage (25%, 50%, 75%, 100%) rather than exact integer values to simulate "Fog of War".
-
-### 6.3 Code Map
+### Code Map
 *   **Entry Point:** `src/main.cpp` calls `armada_tui_run`.
 *   **UI Logic:** `src/client/launcher.cpp` contains the FTXUI definitions.
 *   **Server Logic:** `src/networking/server.c` handles the core state machine.
@@ -139,7 +124,7 @@ The server sends a `PlayerGameState` snapshot. This structure handles informatio
 
 ## 8. Data Types & Network Payloads
 
-This section details the binary structures used for game logic and network communication, primarily defined in `include/common/game_types.h` and `include/common/events.h`.
+Here we detail the binary structures used for game logic and network communication, primarily defined in `include/common/game_types.h` and `include/common/events.h`.
 
 ### 8.1 Enumerations
 

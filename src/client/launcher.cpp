@@ -902,10 +902,40 @@ extern "C" int armada_tui_run(void)
     return app.run();
 }
 
-// ============================================================================
 // CLIENT CALLBACKS
 // These functions are called from the C networking layer (client.c)
-// ============================================================================
+
+// ANSI color codes for client logging
+#define CLR_RESET "\033[0m"
+#define CLR_GREEN "\033[32m"
+#define CLR_YELLOW "\033[33m"
+#define CLR_RED "\033[31m"
+#define CLR_CYAN "\033[36m"
+#define CLR_MAGENTA "\033[35m"
+#define CLR_BLUE "\033[34m"
+#define CLR_BOLD "\033[1m"
+
+// Helper function to get action name
+static const char *get_action_name(UserActionType type)
+{
+    switch (type)
+    {
+    case USER_ACTION_NONE:
+        return "None";
+    case USER_ACTION_END_TURN:
+        return "End Turn";
+    case USER_ACTION_ATTACK_PLANET:
+        return "Attack Planet";
+    case USER_ACTION_REPAIR_PLANET:
+        return "Repair Planet";
+    case USER_ACTION_UPGRADE_PLANET:
+        return "Upgrade Planet";
+    case USER_ACTION_UPGRADE_SHIP:
+        return "Upgrade Ship";
+    default:
+        return "Unknown";
+    }
+}
 
 extern "C" int client_on_init(ClientContext *ctx, const char *player_name)
 {
@@ -917,27 +947,27 @@ extern "C" int client_on_init(ClientContext *ctx, const char *player_name)
 
 extern "C" void client_on_connected(ClientContext *ctx)
 {
-    armada_ui_logf("[Client %s] Connected to server.", ctx->player_name);
+    armada_ui_logf(CLR_GREEN "[%s]" CLR_RESET " Connected to server.", ctx->player_name);
 }
 
 extern "C" void client_on_connecting(ClientContext *ctx, const char *server_addr, int port)
 {
-    armada_ui_logf("[Client %s] Connecting to %s:%d...", ctx->player_name, server_addr, port);
+    armada_ui_logf(CLR_CYAN "[%s]" CLR_RESET " Connecting to " CLR_BOLD "%s:%d" CLR_RESET "...", ctx->player_name, server_addr, port);
 }
 
 extern "C" void client_on_connection_failed(ClientContext *ctx, const char *server_addr, int port)
 {
-    armada_ui_logf("[Client %s] Connection to %s:%d failed.", ctx->player_name, server_addr, port);
+    armada_ui_logf(CLR_RED "[%s] ERROR:" CLR_RESET " Connection to %s:%d failed.", ctx->player_name, server_addr, port);
 }
 
 extern "C" void client_on_disconnected(ClientContext *ctx)
 {
-    armada_ui_logf("[Client %s] Disconnected from server.", ctx->player_name);
+    armada_ui_logf(CLR_YELLOW "[%s]" CLR_RESET " Disconnected from server.", ctx->player_name);
 }
 
 extern "C" void client_on_join_request(ClientContext *ctx)
 {
-    armada_ui_logf("[Client %s] Sending join request.", ctx->player_name);
+    armada_ui_logf(CLR_CYAN "[%s]" CLR_RESET " Sending join request...", ctx->player_name);
 }
 
 extern "C" void client_on_join_ack(ClientContext *ctx, const EventPayload_JoinAck *payload)
@@ -946,21 +976,19 @@ extern "C" void client_on_join_ack(ClientContext *ctx, const EventPayload_JoinAc
         return;
     if (payload->success)
     {
-        armada_ui_logf("[Client %s] Joined successfully. Assigned ID %d.", ctx->player_name, payload->player_id);
+        armada_ui_logf(CLR_GREEN "[%s]" CLR_RESET " Joined successfully! Assigned ID " CLR_BOLD "%d" CLR_RESET ".", ctx->player_name, payload->player_id);
         if (payload->is_host)
         {
-            armada_ui_logf("[Client %s] You are the lobby host. Use 'start' to begin once ready.", ctx->player_name);
+            armada_ui_logf(CLR_MAGENTA "[%s]" CLR_RESET " " CLR_BOLD "You are the lobby host." CLR_RESET " Use 'start' to begin once ready.", ctx->player_name);
         }
         else if (payload->host_player_id >= 0)
         {
-            armada_ui_logf("[Client %s] Waiting for host player %d to begin the match.",
-                           ctx->player_name,
-                           payload->host_player_id);
+            armada_ui_logf(CLR_CYAN "[%s]" CLR_RESET " Waiting for host (player %d) to start the match.", ctx->player_name, payload->host_player_id);
         }
     }
     else
     {
-        armada_ui_logf("[Client %s] Join rejected: %s", ctx->player_name, payload->message);
+        armada_ui_logf(CLR_RED "[%s] REJECTED:" CLR_RESET " %s", ctx->player_name, payload->message);
     }
 }
 
@@ -968,10 +996,10 @@ extern "C" void client_on_player_joined(ClientContext *ctx, const EventPayload_P
 {
     if (!payload)
         return;
-    armada_ui_logf("[Client %s] Player %d joined (%s).",
+    armada_ui_logf(CLR_GREEN "[%s]" CLR_RESET " Player " CLR_BOLD "%s" CLR_RESET " (ID %d) joined the game.",
                    ctx->player_name,
-                   payload->player_id,
-                   payload->player_name);
+                   payload->player_name,
+                   payload->player_id);
 }
 
 extern "C" void client_on_host_update(ClientContext *ctx, const EventPayload_HostUpdate *payload)
@@ -981,18 +1009,18 @@ extern "C" void client_on_host_update(ClientContext *ctx, const EventPayload_Hos
 
     if (payload->host_player_id >= 0)
     {
-        armada_ui_logf("[Client %s] Player %d (%s) is now the lobby host.",
+        armada_ui_logf(CLR_MAGENTA "[%s]" CLR_RESET " " CLR_BOLD "%s" CLR_RESET " (ID %d) is now the lobby host.",
                        ctx->player_name,
-                       payload->host_player_id,
-                       payload->host_player_name);
+                       payload->host_player_name,
+                       payload->host_player_id);
         if (ctx && ctx->player_id == payload->host_player_id)
         {
-            armada_ui_logf("[Client %s] You are now the host. Type 'start' when ready.", ctx->player_name);
+            armada_ui_logf(CLR_MAGENTA "[%s]" CLR_RESET " " CLR_BOLD "You are now the host!" CLR_RESET " Type 'start' when ready.", ctx->player_name);
         }
     }
     else
     {
-        armada_ui_logf("[Client %s] Lobby host cleared. Waiting for a new host.", ctx->player_name);
+        armada_ui_logf(CLR_YELLOW "[%s]" CLR_RESET " Lobby host cleared. Waiting for a new host...", ctx->player_name);
     }
 }
 
@@ -1000,10 +1028,10 @@ extern "C" void client_on_player_left(ClientContext *ctx, const EventPayload_Pla
 {
     if (!payload)
         return;
-    armada_ui_logf("[Client %s] Player %d left (%s).",
+    armada_ui_logf(CLR_YELLOW "[%s]" CLR_RESET " Player " CLR_BOLD "%s" CLR_RESET " (ID %d) left the game.",
                    ctx->player_name,
-                   payload->player_id,
-                   payload->player_name);
+                   payload->player_name,
+                   payload->player_id);
 }
 
 extern "C" void client_on_match_start(ClientContext *ctx, const EventPayload_MatchStart *payload)
@@ -1016,7 +1044,8 @@ extern "C" void client_on_match_start(ClientContext *ctx, const EventPayload_Mat
     ctx->has_state_snapshot = 0;
     memset(&ctx->player_game_state, 0, sizeof(PlayerGameState));
 
-    armada_ui_logf("[Client %s] Match started with %d players. First turn belongs to player %d.",
+    armada_ui_logf(CLR_GREEN CLR_BOLD "=== MATCH STARTED ===" CLR_RESET);
+    armada_ui_logf(CLR_CYAN "[%s]" CLR_RESET " %d players in match. First turn: Player %d.",
                    ctx->player_name,
                    payload->state.player_count,
                    payload->state.turn.current_player_id);
@@ -1025,34 +1054,58 @@ extern "C" void client_on_match_start(ClientContext *ctx, const EventPayload_Mat
 extern "C" void client_on_match_stop(ClientContext *ctx, const EventPayload_Error *payload)
 {
     const char *reason = (payload) ? payload->message : "Unknown";
-    armada_ui_logf("[Client %s] Server message: %s", ctx->player_name, reason);
+    armada_ui_logf(CLR_RED "[%s] SERVER:" CLR_RESET " %s", ctx->player_name, reason);
 }
 
 extern "C" void client_on_turn_event(ClientContext *ctx, EventType type, const EventPayload_TurnInfo *payload)
 {
     if (!payload)
         return;
-    armada_ui_logf("[Client %s] Turn event %d: current %d next %d (#%d).",
-                   ctx->player_name,
-                   type,
-                   payload->current_player_id,
-                   payload->next_player_id,
-                   payload->turn_number);
+
+    (void)type;
+
+    // Log whose turn it is
+    if (payload->current_player_id == ctx->player_id)
+    {
+        armada_ui_logf(CLR_GREEN CLR_BOLD "[%s] >>> YOUR TURN (Turn #%d) <<<" CLR_RESET, ctx->player_name, payload->turn_number);
+    }
+    else
+    {
+        armada_ui_logf(CLR_CYAN "[%s]" CLR_RESET " Turn #%d: Player %d's turn.", ctx->player_name, payload->turn_number, payload->current_player_id);
+    }
 
     if (payload->is_match_start)
     {
-        armada_ui_logf("[Client %s] Match phase starting with this turn.", ctx->player_name);
+        armada_ui_logf(CLR_MAGENTA "[%s]" CLR_RESET " Match phase starting!", ctx->player_name);
     }
 
+    // Log last action with readable description
     if (payload->last_action.action_type != USER_ACTION_NONE)
     {
-        armada_ui_logf("[Client %s] Last action: player %d type %d target %d value %d meta %d.",
+        const char *action_name = get_action_name(payload->last_action.action_type);
+        if (payload->last_action.action_type == USER_ACTION_ATTACK_PLANET)
+        {
+            armada_ui_logf(CLR_RED "[%s]" CLR_RESET " Player %d used " CLR_BOLD "%s" CLR_RESET " on Player %d.",
+                           ctx->player_name,
+                           payload->last_action.player_id,
+                           action_name,
+                           payload->last_action.target_player_id);
+        }
+        else
+        {
+            armada_ui_logf(CLR_BLUE "[%s]" CLR_RESET " Player %d used " CLR_BOLD "%s" CLR_RESET ".",
+                           ctx->player_name,
+                           payload->last_action.player_id,
+                           action_name);
+        }
+    }
+
+    // Log threshold crossing
+    if (payload->threshold_player_id >= 0)
+    {
+        armada_ui_logf(CLR_YELLOW CLR_BOLD "[%s] ⚠ WARNING:" CLR_RESET " Player %d has crossed 900 stars!",
                        ctx->player_name,
-                       payload->last_action.player_id,
-                       payload->last_action.action_type,
-                       payload->last_action.target_player_id,
-                       payload->last_action.value,
-                       payload->last_action.metadata);
+                       payload->threshold_player_id);
     }
 }
 
@@ -1060,7 +1113,7 @@ extern "C" void client_on_threshold(ClientContext *ctx, const EventPayload_Thres
 {
     if (!payload)
         return;
-    armada_ui_logf("[Client %s] Player %d crossed %d stars.",
+    armada_ui_logf(CLR_YELLOW CLR_BOLD "[%s] ⚠ ALERT:" CLR_RESET " Player %d crossed " CLR_BOLD "%d" CLR_RESET " stars!",
                    ctx->player_name,
                    payload->player_id,
                    payload->threshold);
@@ -1068,15 +1121,30 @@ extern "C" void client_on_threshold(ClientContext *ctx, const EventPayload_Thres
 
 extern "C" void client_on_action_sent(ClientContext *ctx, UserActionType type, int target_player_id, int value, int metadata)
 {
-    armada_ui_logf("[Client %s] Action queued: type=%d target=%d value=%d meta=%d",
-                   ctx->player_name,
-                   type,
-                   target_player_id,
-                   value,
-                   metadata);
+    (void)value;
+    (void)metadata;
+    const char *action_name = get_action_name(type);
+    if (type == USER_ACTION_ATTACK_PLANET)
+    {
+        armada_ui_logf(CLR_CYAN "[%s]" CLR_RESET " Sending action: " CLR_BOLD "%s" CLR_RESET " → Player %d",
+                       ctx->player_name, action_name, target_player_id);
+    }
+    else
+    {
+        armada_ui_logf(CLR_CYAN "[%s]" CLR_RESET " Sending action: " CLR_BOLD "%s" CLR_RESET,
+                       ctx->player_name, action_name);
+    }
 }
 
 extern "C" void client_on_game_over(ClientContext *ctx, int winner_id)
 {
-    armada_ui_logf("[Client %s] Winner announced: %d", ctx->player_name, winner_id);
+    armada_ui_logf(CLR_MAGENTA CLR_BOLD "=== GAME OVER ===" CLR_RESET);
+    if (winner_id == ctx->player_id)
+    {
+        armada_ui_logf(CLR_GREEN CLR_BOLD "[%s] 🎉 YOU WIN! 🎉" CLR_RESET, ctx->player_name);
+    }
+    else
+    {
+        armada_ui_logf(CLR_RED "[%s]" CLR_RESET " Player %d wins!", ctx->player_name, winner_id);
+    }
 }
