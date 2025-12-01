@@ -60,6 +60,7 @@ typedef struct
 typedef struct
 {
     int player_id;
+    int is_active;
     char name[MAX_NAME_LEN];
     int show_stars;
     int coarse_planet_health;

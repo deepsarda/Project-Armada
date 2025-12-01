@@ -788,6 +788,7 @@ static int server_build_player_snapshot(ServerContext *ctx, int viewer_id, Playe
         PlayerState *candidate = &ctx->game_state.players[i];
         info.player_id = i;
         strncpy(info.name, candidate->name, MAX_NAME_LEN);
+        info.is_active = candidate->is_active;
         info.name[MAX_NAME_LEN - 1] = '\0'; // safety null-term
         info.planet_level = candidate->planet.level;
 

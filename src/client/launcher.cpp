@@ -596,12 +596,15 @@ namespace
                 if (p.player_id == client_->player_id)
                     continue;
 
+                // skip inactive players
+                if (!p.is_active)
+                    continue;
                 std::vector<Element> lines;
 
                 lines.push_back(text("👾 P" + std::to_string(p.player_id) + " " + p.name) | bold);
                 lines.push_back(
-                    text("SL:" + std::to_string(p.ship_level) +
-                         "   PL:" + std::to_string(p.planet_level)));
+                    text("SL: " + std::to_string(p.ship_level) +
+                         "   PL: " + std::to_string(p.planet_level)));
                 lines.push_back(text("🪐 Planet HP: " + hp_hearts(p.coarse_planet_health)));
 
                 auto block = vbox(lines) | border | size(WIDTH, GREATER_THAN, 22);
@@ -633,9 +636,10 @@ namespace
             if (me.planet.max_health > 0)
                 percentage_health = (me.planet.current_health * 100) / me.planet.max_health;
 
-            lines.push_back(text(std::string("🧑‍🚀 ") + me.name + " \n⭐ " + std::to_string(me.stars)) | bold);
-            lines.push_back(text("SL:" + std::to_string(me.ship.level) +
-                                 "\nPL:" + std::to_string(me.planet.level)));
+            lines.push_back(text(std::string("🚀 ") + client_->player_name) | bold);
+            lines.push_back(text("⭐ " + std::to_string(me.stars)) | bold);
+            lines.push_back(text("Ship Level: " + std::to_string(me.ship.level)));
+            lines.push_back(text("Planet Level: " + std::to_string(me.planet.level)));
             lines.push_back(text("🪐 Planet HP: " + std::to_string(percentage_health) + "%"));
 
             return vbox(lines);
