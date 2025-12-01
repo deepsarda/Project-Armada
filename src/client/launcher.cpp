@@ -469,16 +469,32 @@ namespace
 
         void show_attack_dialog(const std::vector<int> &planet_ids)
         {
-            if (!planet_ids.empty())
+            std::lock_guard<std::mutex> lock(client_mutex_);
+            if (!client_ || !client_->connected || !(client_->valid_actions & VALID_ACTION_ATTACK_PLANET))
+                return;
+
+            target_players_display_.clear();
+            target_player_ids_.clear();
+            for (int i = 0; i < MAX_PLAYERS; ++i)
             {
-                attack_dialog_open = true;
-                selected_target_id = planet_ids[0]; // pick the first planet
+                const PlayerPublicInfo &info = client_->player_game_state.entries[i];
+                if (info.player_id != client_->player_id && info.planet_level > 0)
+                {
+                    target_player_ids_.push_back(i);
+                    target_players_display_.push_back(L"Player " + std::to_wstring(i));
+                }
             }
+
+            if (target_players_display_.empty())
+                return;
+
+            selected_target_index_ = 0;
+            dialog_mode_ = DialogMode::Attack;
+            request_redraw();
         }
 
         Component build_game_action_buttons()
         {
-            // TODO: Implement game action buttons
             auto attack_btn = StyledButton("⚔ Attack", [&]
                                            { show_attack_dialog(target_player_ids_); }, [&]
                                            {
@@ -514,43 +530,20 @@ namespace
             return Container::Horizontal({attack_btn, repair_btn, upgrade_planet_btn, upgrade_ship_btn});
         }
 
-        bool attack_dialog_open = false;
-        int selected_target_id = -1;
-
         Component build_attack_dialog()
         {
-            auto close_attack_dialog = [&]
-            {
-                attack_dialog_open = false;
-                selected_target_id = -1;
-            };
+            target_list_component_ = Radiobox(&target_players_display_, &selected_target_index_);
 
-            auto confirm_btn = StyledButton("Confirm Attack", [&]
-                                            {
-                client_send_action( client_.get(),USER_ACTION_ATTACK_PLANET,selected_target_id,0,0);
-                close_attack_dialog(); }, [&]
-                                            {
-                                                return selected_target_id != -1; // only enabled if a target is selected
-                                            });
-            auto cancel_btn = StyledButton("Cancel", [&]
-                                           { close_attack_dialog(); }, []
-                                           {
-                                               return true; // always enabled
-                                           });
+            auto confirm_btn = SimpleButton("Confirm Attack", [&]
+                                            { confirm_attack(); });
+            auto cancel_btn = SimpleButton("Cancel", [&]
+                                           { dialog_mode_ = DialogMode::None; });
 
-            return Renderer(Container::Vertical({confirm_btn,
-                                                 cancel_btn}),
-                            [&]
-                            {
-                                return vbox({text("Select Attack Confirmation") | bold,
-                                             separator(),
-                                             text("Are you sure you want to attack this planet?") | dim,
-                                             separator(),
-                                             hbox({confirm_btn->Render() | border,
-                                                   ftxui::filler(),
-                                                   cancel_btn->Render() | border})}) |
-                                       border | bgcolor(Color::Black) | size(WIDTH, GREATER_THAN, 40) | size(HEIGHT, GREATER_THAN, 10);
-                            });
+            auto dialog_buttons = Container::Horizontal({confirm_btn, cancel_btn});
+            auto dialog_content = Container::Vertical({target_list_component_, dialog_buttons});
+
+            return dialog_content | Maybe([&]
+                                          { return dialog_mode_ == DialogMode::Attack; });
         }
 
         /*
@@ -586,11 +579,19 @@ namespace
 
         Element render_other_players()
         {
+            // Lock the mutex to ensure the pump thread isn't writing while we read
+            std::lock_guard<std::mutex> lock(client_mutex_);
+
+            // Check if client exists before dereferencing
+            if (!client_ || !client_->connected)
+            {
+                return text("Waiting for connection...") | flex;
+            }
+
             std::vector<Element> player_blocks;
 
             for (const auto &p : client_->player_game_state.entries)
             {
-
                 // skip myself completely
                 if (p.player_id == client_->player_id)
                     continue;
@@ -607,13 +608,19 @@ namespace
                 player_blocks.push_back(block);
             }
 
+            if (player_blocks.empty())
+            {
+                return text("No opponents found.") | flex;
+            }
+
             // return the row of player boxes
             return hbox(player_blocks);
         }
 
         Element render_self_info()
         {
-            // TODO: Implement self info display
+            // Lock the mutex to ensure the pump thread isn't writing while we read
+            std::lock_guard<std::mutex> lock(client_mutex_);
 
             if (!client_ || !client_->connected)
                 return vbox();
@@ -631,8 +638,7 @@ namespace
                                  "\nPL:" + std::to_string(me.planet.level)));
             lines.push_back(text("🪐 Planet HP: " + std::to_string(percentage_health) + "%"));
 
-            // Wrap in vertical box with border and fixed width for left-half style
-            return vbox(lines) | border | size(WIDTH, GREATER_THAN, 22);
+            return vbox(lines);
         }
 
         Element render_game_logs()
@@ -678,7 +684,6 @@ namespace
         {
             auto prematch_controls = build_prematch_controls();
             auto game_actions_button = build_game_action_buttons();
-            // TODO: Add game action buttons here
             auto attack_dialog = build_attack_dialog();
 
             // Use Maybe to show prematch or game controls based on match state
