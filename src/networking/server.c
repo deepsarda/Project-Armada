@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <math.h>
 
 // Create a new server context
 ServerContext *server_create()
@@ -864,11 +865,11 @@ static void server_reset_player(PlayerState *player, int player_id, const char *
     player->is_connected = 1;
     player->stars = STARTING_STARS;
     player->planet.level = STARTING_PLANET_LEVEL;
-    player->planet.max_health = STARTING_PLANET_MAX_HEALTH;
-    player->planet.current_health = STARTING_PLANET_MAX_HEALTH;
-    player->planet.base_income = STARTING_PLANET_INCOME;
+    player->planet.max_health = server_get_planet_base_health(player->planet.level);
+    player->planet.current_health = player->planet.max_health;
+    player->planet.base_income = server_get_planet_base_income(player->planet.level);
     player->ship.level = STARTING_SHIP_LEVEL;
-    player->ship.base_damage = STARTING_SHIP_BASE_DAMAGE;
+    player->ship.base_damage = server_get_ship_base_damage(player->ship.level);
     player->has_crossed_threshold = 0;
 }
 
@@ -1214,46 +1215,54 @@ static int to_coarse_percent(int current, int max)
 static int server_get_planet_upgrade_cost(int current_level)
 {
     // Stub: cost increases with level
-    // Level 1->2: 100, 2->3: 200, 3->4: 300, etc.
-    return current_level * 100;
+    // Level 1->2: 75, 2->3: 81, 3->4: 89, etc.
+    return (75) * pow(1.09, current_level - 1);
 }
 
 // Get the cost to upgrade a ship from current_level to current_level + 1
 static int server_get_ship_upgrade_cost(int current_level)
 {
     // Stub: cost increases with level
-    // Level 1->2: 75, 2->3: 150, 3->4: 225, etc.
-    return current_level * 75;
+    // Level 1->2: 50, 2->3: 54, 3->4: 59, etc.
+    return (50) * pow(1.09, current_level - 1);
 }
 
 // Get the cost to repair a planet to full health
 static int server_get_repair_cost(int planet_level)
 {
-    // Stub: repair cost scales with planet level
-    // Level 1: 25, Level 2: 50, Level 3: 75, etc.
-    return planet_level * 25;
+    // fixed cost for all levels for simplicity
+    return 50;
 }
 
 // Get the base health for a planet at a given level
 static int server_get_planet_base_health(int level)
 {
     // Stub: health increases with level
-    // Level 1: 100, Level 2: 150, Level 3: 200, etc.
-    return 100 + (level - 1) * 50;
+    // Level 1: 100, Level 2: 110, Level 3: 121, etc.
+    return (100) * pow(1.1, level - 1);
 }
 
 // Get the base income for a planet at a given level
 static int server_get_planet_base_income(int level)
 {
     // Stub: income increases with level
-    // Level 1: 25, Level 2: 35, Level 3: 45, etc.
-    return 25 + (level - 1) * 10;
+    // Level 1: 20, Level 2: 22, Level 3: 24, etc.
+    return (server_get_planet_base_health(level) / 5);
 }
 
 // Get the base damage for a ship at a given level
 static int server_get_ship_base_damage(int level)
 {
     // Stub: damage increases with level
-    // Level 1: 15, Level 2: 25, Level 3: 35, etc.
-    return 15 + (level - 1) * 10;
+    // Level 1: 20, Level 2: 22, Level 3: 24, etc.
+    return (20) * pow(1.1, level - 1);
+}
+
+// Stars gained by attacking a planet
+static int server_get_attack_star_gain(int level,int damage_dealt,int planet_max_health)
+{
+    // Stub: gain is proportional to damage dealt and planet level
+    if (planet_max_health <= 0)
+        return 0;
+    return ((damage_dealt /planet_max_health)*100)*(pow(1.05, level - 1));
 }
