@@ -89,11 +89,11 @@ void server_on_turn_action(ServerContext *ctx, const EventPayload_UserAction *ac
 
     if (action)
     {
-        // TODO: Enter logic to process the action here
         PlayerState *player = &ctx->game_state.players[action->player_id];
         switch (action->action_type)
         {
         case USER_ACTION_UPGRADE_PLANET:
+        {
             int cost = server_get_planet_upgrade_cost(player->planet.level);
             if (cost > player->stars)
             {
@@ -109,7 +109,9 @@ void server_on_turn_action(ServerContext *ctx, const EventPayload_UserAction *ac
                                player->planet.level,
                                cost);
             break;
+        }
         case USER_ACTION_UPGRADE_SHIP:
+        {
             int ship_cost = server_get_ship_upgrade_cost(player->ship.level);
             if (ship_cost > player->stars)
             {
@@ -122,7 +124,9 @@ void server_on_turn_action(ServerContext *ctx, const EventPayload_UserAction *ac
             armada_server_logf(SRV_COLOR_GREEN "[Server]" SRV_COLOR_RESET " Player " SRV_COLOR_CYAN "%d" SRV_COLOR_RESET " upgraded their ship.",
                                action->player_id);
             break;
+        }
         case USER_ACTION_REPAIR_PLANET:
+        {
             int repair_cost = server_get_repair_cost(player->planet.level);
             if (repair_cost > player->stars)
             {
@@ -135,6 +139,7 @@ void server_on_turn_action(ServerContext *ctx, const EventPayload_UserAction *ac
                                action->player_id,
                                repair_cost);
             break;
+        }
         case USER_ACTION_ATTACK_PLANET:
         {
             int target_id = action->target_player_id;
@@ -147,9 +152,9 @@ void server_on_turn_action(ServerContext *ctx, const EventPayload_UserAction *ac
             }
             PlayerState *target_player = &ctx->game_state.players[target_id];
             int damage = player->ship.base_damage;
-            if(damage>target_player->planet.current_health)
+            if (damage > target_player->planet.current_health)
             {
-                damage=target_player->planet.current_health;
+                damage = target_player->planet.current_health;
             }
             target_player->planet.current_health -= damage;
             if (target_player->planet.current_health == 0)
