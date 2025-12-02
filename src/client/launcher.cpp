@@ -4,6 +4,7 @@
 #include "../../include/common/events.h"
 #include "../../include/networking/network.h"
 #include "../../include/server/server_api.h"
+#include "../../include/server/main.h"
 #include <ftxui/component/component.hpp>
 #include <ftxui/component/screen_interactive.hpp>
 #include <ftxui/dom/elements.hpp>
@@ -665,11 +666,15 @@ namespace
             if (me.planet.max_health > 0)
                 percentage_health = (me.planet.current_health * 100) / me.planet.max_health;
 
-            lines.push_back(text(std::string("🚀 ") + client_->player_name) | bold);
+            // Calculate upgrade costs
+            int ship_upgrade_cost = server_get_ship_upgrade_cost(me.ship.level);
+            int planet_upgrade_cost = server_get_planet_upgrade_cost(me.planet.level);
+
+            lines.push_back(text(std::string("👤 ") + client_->player_name) | bold);
             lines.push_back(text("⭐ " + std::to_string(me.stars)) | bold);
-            lines.push_back(text("Ship Level: " + std::to_string(me.ship.level)));
-            lines.push_back(text("Planet Level: " + std::to_string(me.planet.level)));
-            lines.push_back(text("🪐 Planet HP: " + std::to_string(percentage_health) + "%"));
+            lines.push_back(text("🚀 Ship Lv: " + std::to_string(me.ship.level) + " (⬆️ " + std::to_string(ship_upgrade_cost) + "⭐)"));
+            lines.push_back(text("🪐 Planet Lv: " + std::to_string(me.planet.level) + " (⬆️ " + std::to_string(planet_upgrade_cost) + "⭐)"));
+            lines.push_back(text("❤️ Planet HP: " + std::to_string(percentage_health) + "%"));
 
             return vbox(lines);
         }

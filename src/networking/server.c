@@ -8,6 +8,12 @@
 #include <time.h>
 #include <math.h>
 
+#if defined(_WIN32)
+#include <mstcpip.h>
+#else
+#include <netinet/tcp.h>
+#endif
+
 // Create a new server context
 ServerContext *server_create()
 {
@@ -313,6 +319,10 @@ static void *server_accept_thread(void *arg)
             continue;
         }
 
+        // Enable TCP_NODELAY to reduce latency (disable Nagle's algorithm)
+        int nodelay = 1;
+        setsockopt(new_socket, IPPROTO_TCP, TCP_NODELAY, (const char *)&nodelay, sizeof(nodelay));
+
         server_on_client_connected(ctx, new_socket);
 
         // Create a thread for this client
@@ -346,8 +356,15 @@ static void *server_client_thread(void *arg)
     GameEvent event;
     while (ctx->running)
     {
-        int result = net_receive_event(sock, &event);
-        if (result <= 0)
+        // Use timeout-based receive to allow clean shutdown
+        // This allows the thread to periodically check ctx->running
+        int result = net_receive_event_timeout(sock, &event, 500); // 500ms timeout
+        if (result == 0)
+        {
+            // Timeout - no data, just loop back and check running flag
+            continue;
+        }
+        if (result < 0)
         {
             server_on_client_disconnected(ctx, sock);
             break;
@@ -1079,6 +1096,17 @@ static void server_broadcast_current_turn(ServerContext *ctx, int is_match_start
         pthread_mutex_unlock(&ctx->state_mutex);
         return;
     }
+
+    // Add planet income to the first player at match start
+    if (is_match_start)
+    {
+        PlayerState *current_player = server_get_player(ctx, current_id);
+        if (current_player && current_player->is_active)
+        {
+            current_player->stars += current_player->planet.base_income;
+        }
+    }
+
     int turn_number = ctx->game_state.turn.turn_number;
     int next_id = server_next_active_player(ctx, current_id);
     pthread_mutex_unlock(&ctx->state_mutex);

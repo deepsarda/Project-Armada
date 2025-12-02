@@ -4,6 +4,12 @@
 #include <string.h>
 
 #if defined(_WIN32)
+#include <mstcpip.h>
+#else
+#include <netinet/tcp.h>
+#endif
+
+#if defined(_WIN32)
 static int net_platform_initialized = 0;
 
 static void net_platform_cleanup(void)
@@ -163,6 +169,10 @@ net_socket_t net_connect_to_server(const char *host, int port)
         return NET_INVALID_SOCKET;
     }
 
+    // Enable TCP_NODELAY to reduce latency (disable Nagle's algorithm)
+    int nodelay = 1;
+    setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, (const char *)&nodelay, sizeof(nodelay));
+
     return sock;
 }
 
@@ -274,6 +284,71 @@ int net_receive_event(net_socket_t sock, GameEvent *event)
 {
     int result = net_receive_event_flags(sock, event, 0);
     return result > 0 ? 1 : 0;
+}
+
+/**
+ * Receive a GameEvent struct from the socket with a timeout.
+ * Returns 1 on success, 0 on timeout, -1 on error/disconnect.
+ * This is useful for server client threads that need to periodically
+ * check if the server is still running.
+ */
+int net_receive_event_timeout(net_socket_t sock, GameEvent *event, int timeout_ms)
+{
+    if (sock == NET_INVALID_SOCKET || !event)
+        return -1;
+
+    fd_set readfds;
+    FD_ZERO(&readfds);
+    FD_SET(sock, &readfds);
+
+    struct timeval tv;
+    tv.tv_sec = timeout_ms / 1000;
+    tv.tv_usec = (timeout_ms % 1000) * 1000;
+
+#if defined(_WIN32)
+    int ready = select(0, &readfds, NULL, NULL, &tv);
+#else
+    int ready = select((int)(sock + 1), &readfds, NULL, NULL, &tv);
+#endif
+    if (ready < 0)
+    {
+        int last_error = NET_ERRNO();
+        if (last_error == NET_EINTR)
+            return 0; // Interrupted, treat as timeout
+        net_log_socket_error("select");
+        return -1;
+    }
+    if (ready == 0)
+    {
+        return 0; // Timeout, no data available
+    }
+
+    // Data is available, do a blocking recv
+    ssize_t valread = recv(sock, (char *)event, sizeof(GameEvent), 0);
+
+    if (valread == 0)
+    {
+        return -1; // disconnected
+    }
+
+    if (valread < 0)
+    {
+        int last_error = NET_ERRNO();
+        if (last_error == NET_EWOULDBLOCK || last_error == NET_EAGAIN || last_error == NET_EINTR)
+        {
+            return 0; // Treat as timeout
+        }
+        net_log_socket_error("recv");
+        return -1;
+    }
+
+    if (valread != (ssize_t)sizeof(GameEvent))
+    {
+        fprintf(stderr, "Warning: Partial event read %zd/%zu\n", valread, sizeof(GameEvent));
+        return -1;
+    }
+
+    return 1;
 }
 
 /**

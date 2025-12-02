@@ -24,6 +24,8 @@ extern "C"
     int net_send_event(net_socket_t sock, const GameEvent *event);
     int net_receive_event(net_socket_t sock, GameEvent *event);
     int net_receive_event_flags(net_socket_t sock, GameEvent *event, int flags);
+    // Returns 1 on success, 0 on timeout, -1 on error/disconnect
+    int net_receive_event_timeout(net_socket_t sock, GameEvent *event, int timeout_ms);
 
     // Discovery helpers
     int net_discover_lan_servers(char hosts[][64], int max_hosts, int port, int timeout_ms);
