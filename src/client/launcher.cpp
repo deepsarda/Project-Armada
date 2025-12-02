@@ -556,7 +556,14 @@ namespace
                    client_->current_turn_player_id == client_->player_id &&
                    (client_->valid_actions & VALID_ACTION_UPGRADE_SHIP); });
 
-            return Container::Horizontal({attack_btn, repair_btn, upgrade_planet_btn, upgrade_ship_btn});
+            auto skip_btn = StyledButton("⏭ End Turn", [&]
+                                         { client_send_action(client_.get(), USER_ACTION_END_TURN, -1, 0, 0); }, [&]
+                                         {
+                std::lock_guard<std::mutex> lock(client_mutex_);
+                return client_ && client_->connected &&
+                   client_->current_turn_player_id == client_->player_id; });
+
+            return Container::Horizontal({attack_btn, repair_btn, upgrade_planet_btn, upgrade_ship_btn, skip_btn});
         }
 
         Component build_attack_dialog()
