@@ -1,0 +1,145 @@
+# =============================================================================
+# GitHub Actions Workflow for Cross-Platform Builds
+# =============================================================================
+# This workflow automatically builds the project for macOS, Windows, and Linux
+# whenever code is pushed or a pull request is created.
+#
+# Releases are created when a tag starting with 'v' is pushed (e.g., v1.0.0)
+# =============================================================================
+
+name: Build and Release
+
+on:
+  push:
+    branches: [ main, master, develop ]
+    tags:
+      - 'v*'
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:  # Allow manual trigger
+
+jobs:
+  build:
+    name: Build on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # macOS build (Intel)
+          - os: macos-13
+            name: macOS-Intel
+            artifact_name: armada-macos-intel
+            cmake_args: -DCMAKE_OSX_ARCHITECTURES=x86_64
+            
+          # macOS build (Apple Silicon)
+          - os: macos-14
+            name: macOS-ARM64
+            artifact_name: armada-macos-arm64
+            cmake_args: -DCMAKE_OSX_ARCHITECTURES=arm64
+            
+          # Windows build
+          - os: windows-latest
+            name: Windows
+            artifact_name: armada-windows
+            cmake_args: ""
+            
+          # Linux build
+          - os: ubuntu-latest
+            name: Linux
+            artifact_name: armada-linux
+            cmake_args: ""
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up build environment (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake git
+
+      - name: Set up build environment (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install cmake
+
+      - name: Set up MSVC (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Configure CMake
+        run: |
+          cmake -B build -DCMAKE_BUILD_TYPE=Release -DSTATIC_BUILD=ON ${{ matrix.cmake_args }}
+
+      - name: Build
+        run: |
+          cmake --build build --config Release --parallel
+
+      - name: Create package directory
+        shell: bash
+        run: |
+          mkdir -p dist
+          
+      - name: Package (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          cd build
+          # Create archive with executable
+          if [ -f armada ]; then
+            chmod +x armada
+            tar -czvf ../dist/${{ matrix.artifact_name }}.tar.gz armada
+          fi
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem -Path build -Recurse -Filter "armada.exe" | Select-Object -First 1
+          if ($exe) {
+            Compress-Archive -Path $exe.FullName -DestinationPath "dist/${{ matrix.artifact_name }}.zip"
+          }
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: dist/*
+          if-no-files-found: error
+
+  # Create a release when a tag is pushed
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+      
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Display structure of downloaded files
+        run: ls -R artifacts
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            artifacts/**/*.tar.gz
+            artifacts/**/*.zip
+          generate_release_notes: true
+          draft: false
+          prerelease: ${{ contains(github.ref, '-beta') || contains(github.ref, '-alpha') || contains(github.ref, '-rc') }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
