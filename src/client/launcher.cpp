@@ -326,7 +326,6 @@ namespace
 
             if (hosting_ && host_server_)
             {
-                pthread_mutex_lock(&host_server_->state_mutex);
                 GameState &gs = host_server_->game_state;
 
                 stats_elements.push_back(text("Players: " + std::to_string(gs.player_count) + "/" + std::to_string(host_server_->max_players)));
@@ -362,8 +361,6 @@ namespace
                         stats_elements.push_back(text(player_line));
                     }
                 }
-
-                pthread_mutex_unlock(&host_server_->state_mutex);
             }
             else
             {

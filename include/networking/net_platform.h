@@ -28,6 +28,27 @@ typedef SOCKET net_socket_t;
 #define NET_EINTR WSAEINTR
 #define NET_EBADF WSAEBADF
 #define NET_MSG_DONTWAIT 0x1000
+
+/* Threading abstraction for cross-platform compatibility */
+typedef HANDLE net_thread_t;
+typedef CRITICAL_SECTION net_mutex_t;
+
+#define net_thread_create(thread, func, arg)                                            \
+    (*(thread) = CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE)(func), (arg), 0, NULL), \
+     *(thread) == NULL ? -1 : 0)
+#define net_thread_join(thread) \
+    (WaitForSingleObject((thread), INFINITE), CloseHandle((thread)), 0)
+#define net_thread_detach(thread) \
+    CloseHandle(thread)
+#define net_mutex_init(mutex) \
+    (InitializeCriticalSection(mutex), 0)
+#define net_mutex_destroy(mutex) \
+    DeleteCriticalSection(mutex)
+#define net_mutex_lock(mutex) \
+    EnterCriticalSection(mutex)
+#define net_mutex_unlock(mutex) \
+    LeaveCriticalSection(mutex)
+
 #else
 #include <unistd.h>
 #include <sys/types.h>
@@ -37,6 +58,8 @@ typedef SOCKET net_socket_t;
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <errno.h>
+#include <pthread.h>
+
 typedef int net_socket_t;
 #define NET_INVALID_SOCKET (-1)
 #define NET_SOCKET_ERROR (-1)
@@ -47,6 +70,26 @@ typedef int net_socket_t;
 #define NET_EINTR EINTR
 #define NET_EBADF EBADF
 #define NET_MSG_DONTWAIT MSG_DONTWAIT
+
+/* Threading abstraction for POSIX systems */
+typedef pthread_t net_thread_t;
+typedef pthread_mutex_t net_mutex_t;
+
+#define net_thread_create(thread, func, arg) \
+    pthread_create((thread), NULL, (func), (arg))
+#define net_thread_join(thread) \
+    pthread_join((thread), NULL)
+#define net_thread_detach(thread) \
+    pthread_detach(thread)
+#define net_mutex_init(mutex) \
+    pthread_mutex_init((mutex), NULL)
+#define net_mutex_destroy(mutex) \
+    pthread_mutex_destroy(mutex)
+#define net_mutex_lock(mutex) \
+    pthread_mutex_lock(mutex)
+#define net_mutex_unlock(mutex) \
+    pthread_mutex_unlock(mutex)
+
 #endif
 
 #endif // NET_PLATFORM_H

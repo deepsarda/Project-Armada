@@ -1,8 +1,6 @@
 #ifndef SERVER_API_H
 #define SERVER_API_H
 
-#include <pthread.h>
-
 #include "../common/events.h"
 #include "../common/game_types.h"
 #include "../networking/net_platform.h"
@@ -16,9 +14,9 @@ typedef struct ServerContext
     net_socket_t server_socket;
     net_socket_t player_sockets[MAX_PLAYERS];
     net_socket_t discovery_socket;
-    pthread_mutex_t state_mutex;
-    pthread_t accept_thread;
-    pthread_t discovery_thread;
+    net_mutex_t state_mutex;
+    net_thread_t accept_thread;
+    net_thread_t discovery_thread;
 } ServerContext;
 
 #ifdef __cplusplus
