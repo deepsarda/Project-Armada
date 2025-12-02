@@ -1300,7 +1300,7 @@ int server_get_ship_base_damage(int level)
 {
     // Stub: damage increases with level
     // Level 1: 20, Level 2: 22, Level 3: 24, etc.
-    return (int)((20.0) * pow(1.1, level - 1));
+    return (int)((50.0) * pow(1.1, level - 1));
 }
 
 // Stars gained by attacking a planet
