@@ -156,7 +156,7 @@ void server_on_turn_action(ServerContext *ctx, const EventPayload_UserAction *ac
                                    target_id);
             }
             // Calculate stars gained by attacker
-            int stars_gained = server_get_attack_star_gain(target_player->planet.level, damage, target_player->planet.max_health);
+            int stars_gained = server_get_attack_star_gain(player->ship.level, damage, target_player->planet.max_health);
             player->stars += stars_gained;
             armada_server_logf(SRV_COLOR_GREEN "[Server]" SRV_COLOR_RESET " Player " SRV_COLOR_CYAN "%d" SRV_COLOR_RESET " attacked player " SRV_COLOR_CYAN "%d" SRV_COLOR_RESET "'s planet for " SRV_COLOR_YELLOW "%d" SRV_COLOR_RESET " damage, gaining " SRV_COLOR_YELLOW "%d" SRV_COLOR_RESET " stars.",
                                action->player_id,

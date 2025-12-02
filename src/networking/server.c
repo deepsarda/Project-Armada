@@ -1233,7 +1233,7 @@ int server_get_planet_upgrade_cost(int current_level)
 {
     // Stub: cost increases with level
     // Level 1->2: 75, 2->3: 81, 3->4: 89, etc.
-    return (75) * pow(1.09, current_level - 1);
+    return (int)((75.0) * pow(1.09, current_level - 1));
 }
 
 // Get the cost to upgrade a ship from current_level to current_level + 1
@@ -1241,7 +1241,7 @@ int server_get_ship_upgrade_cost(int current_level)
 {
     // Stub: cost increases with level
     // Level 1->2: 50, 2->3: 54, 3->4: 59, etc.
-    return (50) * pow(1.09, current_level - 1);
+    return (int)((50.0) * pow(1.09, current_level - 1));
 }
 
 // Get the cost to repair a planet to full health
@@ -1256,7 +1256,7 @@ int server_get_planet_base_health(int level)
 {
     // Stub: health increases with level
     // Level 1: 100, Level 2: 110, Level 3: 121, etc.
-    return (100) * pow(1.1, level - 1);
+    return (int)((100.0) * pow(1.1, level - 1));
 }
 
 // Get the base income for a planet at a given level
@@ -1264,7 +1264,7 @@ int server_get_planet_base_income(int level)
 {
     // Stub: income increases with level
     // Level 1: 20, Level 2: 22, Level 3: 24, etc.
-    return (server_get_planet_base_health(level) / 5);
+    return (int)(server_get_planet_base_health(level) / 5.0);
 }
 
 // Get the base damage for a ship at a given level
@@ -1272,7 +1272,7 @@ int server_get_ship_base_damage(int level)
 {
     // Stub: damage increases with level
     // Level 1: 20, Level 2: 22, Level 3: 24, etc.
-    return (20) * pow(1.1, level - 1);
+    return (int)((20.0) * pow(1.1, level - 1));
 }
 
 // Stars gained by attacking a planet
@@ -1281,5 +1281,5 @@ int server_get_attack_star_gain(int level, int damage_dealt, int planet_max_heal
     // Stub: gain is proportional to damage dealt and planet level
     if (planet_max_health <= 0)
         return 0;
-    return ((damage_dealt / planet_max_health) * 100) * (pow(1.05, level - 1));
+    return (int)(((damage_dealt / (double)planet_max_health) * 100) * (pow(1.05, level - 1)));
 }
