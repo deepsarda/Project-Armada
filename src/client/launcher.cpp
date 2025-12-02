@@ -556,7 +556,7 @@ namespace
                    client_->current_turn_player_id == client_->player_id &&
                    (client_->valid_actions & VALID_ACTION_UPGRADE_SHIP); });
 
-            auto skip_btn = StyledButton("⏭ End Turn", [&]
+            auto skip_btn = StyledButton("⏭ Skip Turn", [&]
                                          { client_send_action(client_.get(), USER_ACTION_END_TURN, -1, 0, 0); }, [&]
                                          {
                 std::lock_guard<std::mutex> lock(client_mutex_);
